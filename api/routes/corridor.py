@@ -36,7 +36,11 @@ def compute_corridor_state(corridor: str) -> dict:
     impact = predict_label(clf, feats)
     duration = int(reg_dur.predict(feats)[0])
 
-    speed_data = get_speeds(corridor)
+    lat, lon = get_corridor_centroids().get(corridor, (12.97, 77.59))
+    # Pass the corridor's coordinates so the live TomTom Flow Segment Data
+    # endpoint can be queried for the nearest road segment (falls back to
+    # mock internally if no API key / the call fails).
+    speed_data = get_speeds(corridor, float(lat), float(lon))
     model_risk = get_model_risk(corridor)
     event_ctx = get_event_context(corridor)
     score = compute_score(
@@ -44,7 +48,6 @@ def compute_corridor_state(corridor: str) -> dict:
         event_mult=event_ctx["congestion_multiplier"], hour=now.hour,
     )
 
-    lat, lon = get_corridor_centroids().get(corridor, (12.97, 77.59))
     state = {
         "corridor": corridor,
         "lat": float(lat),
@@ -53,6 +56,9 @@ def compute_corridor_state(corridor: str) -> dict:
         "congestion_duration_min": duration,
         "composite_score": score,
         "tomtom_deviation": speed_data["deviation"],
+        "tomtom_current_speed": speed_data["current_speed"],
+        "tomtom_free_flow_speed": speed_data["free_flow_speed"],
+        "tomtom_road_closure": speed_data["road_closure"],
         "tomtom_is_mock": speed_data["is_mock"],
         "event_nearby": bool(event_ctx["event_nearby"]),
         "updated_at": now.isoformat(),

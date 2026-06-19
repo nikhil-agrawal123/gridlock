@@ -9,3 +9,4 @@ catboost_info/
 data/*.graphml
 data/*.pkl
 Astram event data_anonymized*.csv
+.env

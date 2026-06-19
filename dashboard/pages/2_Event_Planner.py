@@ -7,6 +7,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from config import API_BASE
+from modules.geocode import geocode_place
 
 st.set_page_config(page_title="Event Planner", layout="wide")
 st.title("Event Planner -- Phase 1")
@@ -25,20 +26,93 @@ is_route = st.checkbox(
     "Moving event (rally / road show) -- affects a route, not a single venue"
 )
 
+# Single source of truth for where the event is -- search/map-click/manual
+# entry all write here, and everything downstream just reads these.
+st.session_state.setdefault("ep_lat", 12.9794)
+st.session_state.setdefault("ep_lon", 77.5996)
+st.session_state.setdefault("ep_end_lat", 12.9716)
+st.session_state.setdefault("ep_end_lon", 77.6190)
+
 if is_route:
     st.caption("Affected zone follows the road path from start to end, not a circle around one point.")
+else:
+    st.caption("Type a place name, click the map, or enter coordinates directly.")
+
+# --- Place-name search ---
+search_cols = st.columns(2) if is_route else [st.container()]
+with search_cols[0]:
+    start_place = st.text_input("Search start place" if is_route else "Search place", placeholder="e.g. Chinnaswamy Stadium")
+    if st.button("Locate start" if is_route else "Locate", key="locate_start"):
+        try:
+            st.session_state["ep_lat"], st.session_state["ep_lon"] = geocode_place(start_place)
+            st.rerun()
+        except ValueError as e:
+            st.error(str(e))
+if is_route:
+    with search_cols[1]:
+        end_place = st.text_input("Search end place", placeholder="e.g. Freedom Park")
+        if st.button("Locate end", key="locate_end"):
+            try:
+                st.session_state["ep_end_lat"], st.session_state["ep_end_lon"] = geocode_place(end_place)
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+
+# --- Click-to-pick map ---
+pick_target = "start"
+if is_route:
+    pick_target = st.radio("Map click sets:", ["Start point", "End point"], horizontal=True)
+
+picker_map = folium.Map(location=[st.session_state["ep_lat"], st.session_state["ep_lon"]], zoom_start=12)
+folium.Marker(
+    [st.session_state["ep_lat"], st.session_state["ep_lon"]],
+    tooltip="Start" if is_route else "Venue", icon=folium.Icon(color="blue"),
+).add_to(picker_map)
+if is_route:
+    folium.Marker(
+        [st.session_state["ep_end_lat"], st.session_state["ep_end_lon"]],
+        tooltip="End", icon=folium.Icon(color="green"),
+    ).add_to(picker_map)
+
+map_data = st_folium(picker_map, height=350, use_container_width=True, key="picker_map")
+last_clicked = map_data.get("last_clicked") if map_data else None
+if last_clicked:
+    click_coords = (round(last_clicked["lat"], 6), round(last_clicked["lng"], 6))
+    if click_coords != st.session_state.get("ep_last_click"):
+        st.session_state["ep_last_click"] = click_coords
+        if pick_target == "Start point" or not is_route:
+            st.session_state["ep_lat"], st.session_state["ep_lon"] = click_coords
+        else:
+            st.session_state["ep_end_lat"], st.session_state["ep_end_lon"] = click_coords
+        st.rerun()
+
+
+# --- Manual fine-tuning ---
+# Controlled-component pattern: the widget reads its current value from
+# session_state and writes the (possibly edited) value straight back.
+# We deliberately do NOT give the number_input the same `key` as the
+# session_state entry -- a widget that owns the key gets reset to the
+# input's own default (0.0) whenever it's conditionally hidden (e.g.
+# toggling route mode), which would clobber the stored coordinate.
+def coord_input(label, state_key):
+    val = st.number_input(label, value=float(st.session_state[state_key]), format="%.4f")
+    st.session_state[state_key] = val
+    return val
+
+
+if is_route:
     rcol1, rcol2 = st.columns(2)
     with rcol1:
         st.markdown("**Start point**")
-        lat = st.number_input("Start latitude", value=12.9750, format="%.4f")
-        lon = st.number_input("Start longitude", value=77.6050, format="%.4f")
+        lat = coord_input("Start latitude", "ep_lat")
+        lon = coord_input("Start longitude", "ep_lon")
     with rcol2:
         st.markdown("**End point**")
-        end_lat = st.number_input("End latitude", value=12.9716, format="%.4f")
-        end_lon = st.number_input("End longitude", value=77.6190, format="%.4f")
+        end_lat = coord_input("End latitude", "ep_end_lat")
+        end_lon = coord_input("End longitude", "ep_end_lon")
 else:
-    lat = st.number_input("Venue latitude", value=12.9794, format="%.4f")
-    lon = st.number_input("Venue longitude", value=77.5996, format="%.4f")
+    lat = coord_input("Venue latitude", "ep_lat")
+    lon = coord_input("Venue longitude", "ep_lon")
     end_lat = end_lon = None
 
 if st.button("Generate deployment brief", type="primary"):

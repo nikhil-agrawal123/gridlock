@@ -27,7 +27,22 @@ except requests.RequestException as e:
     st.error(f"Couldn't reach API at {API_BASE}: {e}")
     st.stop()
 
+live = states and not states[0].get("tomtom_is_mock")
+if live:
+    st.success("TomTom Traffic Flow: live")
+else:
+    st.info("TomTom Traffic Flow: mock (no/invalid TOMTOM_API_KEY) -- speed deviations are deterministic placeholders.")
+
 COLOURS = {"High": "red", "Medium": "orange", "Low": "green"}
+
+
+def speed_line(corr):
+    cur, free = corr.get("tomtom_current_speed"), corr.get("tomtom_free_flow_speed")
+    if cur is not None and free is not None:
+        closed = " (ROAD CLOSED)" if corr.get("tomtom_road_closure") else ""
+        return f"<br>Speed: {cur}/{free} km/h{closed}"
+    return f"<br>Speed deviation: {corr['tomtom_deviation']}"
+
 
 m = folium.Map(location=[12.97, 77.59], zoom_start=12)
 for corr in states:
@@ -40,6 +55,7 @@ for corr in states:
             f"Score: {corr['composite_score']}/100<br>"
             f"Impact: {corr['impact_level']}<br>"
             f"Duration: {corr['congestion_duration_min']} min"
+            + speed_line(corr)
             + ("<br><i>Event nearby</i>" if corr["event_nearby"] else ""),
             max_width=200,
         ),
@@ -53,5 +69,3 @@ st.dataframe(top3, use_container_width=True)
 
 with st.expander("All corridor states"):
     st.dataframe(states, use_container_width=True)
-    if states and states[0].get("tomtom_is_mock"):
-        st.caption("TomTom feed is mocked (no TOMTOM_API_KEY set) -- deviations are deterministic placeholders.")
