@@ -1,0 +1,11 @@
+.claude
+venv/
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+cache/
+catboost_info/
+.run/
+data/*.graphml
+data/*.pkl
+Astram event data_anonymized*.csv
