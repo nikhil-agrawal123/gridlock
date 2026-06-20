@@ -2,7 +2,11 @@
   - impact_clf:    classifier  -> impact_level (Low/Medium/High)
   - duration_reg:  regressor   -> congestion_duration_min
   - corridor_reg:  regressor   -> affected_corridor_count
-All three share the same 15 features; CAT marks the categorical ones.
+All three share the same 16 features; CAT marks the categorical ones.
+
+Split strategy: TIME-BASED (sort by row order as a time proxy, train on
+first 80%, evaluate on last 20%).  Random shuffle is avoided because it
+leaks temporal patterns and inflates metrics.
 """
 import argparse
 import os
@@ -11,7 +15,6 @@ import joblib
 import pandas as pd
 from catboost import CatBoostClassifier, CatBoostRegressor
 from sklearn.metrics import accuracy_score, mean_absolute_error, roc_auc_score
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import label_binarize
 
 DATA_PATH = os.path.join("data", "processed", "featured_v2.parquet")
@@ -35,17 +38,22 @@ def load_features():
     return df, X
 
 
+def _time_split(X, y, test_frac=0.2):
+    """Time-based split: first (1-test_frac) rows train, rest test.
+    Rows are assumed to be in chronological order (or a stable proxy)."""
+    split = int(len(X) * (1 - test_frac))
+    return X.iloc[:split], X.iloc[split:], y.iloc[:split], y.iloc[split:]
+
+
 def train_impact_classifier(df, X, eval_only=False):
     y = df["impact_level"].astype(str)
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
+    X_tr, X_te, y_tr, y_te = _time_split(X, y)
     clf = CatBoostClassifier(
         iterations=500, depth=6, learning_rate=0.05,
         cat_features=CAT_FEATURES, eval_metric="Accuracy",
         auto_class_weights="Balanced", random_seed=42, verbose=100,
     )
-    clf.fit(X_tr, y_tr)
+    clf.fit(X_tr, y_tr, eval_set=(X_te, y_te), early_stopping_rounds=50)
 
     preds = clf.predict(X_te).flatten()
     proba = clf.predict_proba(X_te)
@@ -56,6 +64,19 @@ def train_impact_classifier(df, X, eval_only=False):
     except ValueError:
         auc = float("nan")
     print(f"[impact_clf] accuracy={acc:.4f}  auc_ovr={auc:.4f}")
+    if auc > 0.95:
+        print("  WARNING: AUC > 0.95 -- possible residual leakage, check feature importances below")
+
+    # Feature importance -- surfaces what is driving predictions
+    print("\n[impact_clf] Feature importances:")
+    try:
+        imp = clf.get_feature_importance(prettified=True)
+        print(imp.to_string(index=False))
+    except Exception:
+        for n, v in sorted(zip(clf.feature_names_, clf.get_feature_importance()),
+                           key=lambda x: -x[1]):
+            print(f"  {n:30s}  {v:.2f}")
+    print()
 
     if not eval_only:
         joblib.dump(clf, os.path.join(MODELS_DIR, "impact_clf.pkl"))
@@ -65,7 +86,7 @@ def train_impact_classifier(df, X, eval_only=False):
 def train_duration_regressor(df, X, eval_only=False):
     mask = df["congestion_duration_min"].notna()
     Xd, yd = X[mask], df.loc[mask, "congestion_duration_min"]
-    X_tr, X_te, y_tr, y_te = train_test_split(Xd, yd, test_size=0.2, random_state=42)
+    X_tr, X_te, y_tr, y_te = _time_split(Xd, yd)
     reg = CatBoostRegressor(
         iterations=500, depth=6, learning_rate=0.05,
         cat_features=CAT_FEATURES, eval_metric="MAE",
@@ -83,7 +104,7 @@ def train_duration_regressor(df, X, eval_only=False):
 
 def train_corridor_regressor(df, X, eval_only=False):
     y = df["affected_corridor_count"]
-    X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_tr, X_te, y_tr, y_te = _time_split(X, y)
     reg = CatBoostRegressor(
         iterations=300, depth=4, learning_rate=0.05,
         cat_features=CAT_FEATURES, random_seed=42, verbose=0,

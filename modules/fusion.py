@@ -27,6 +27,24 @@ def compute_score_fixed(tomtom_dev, model_risk, event_mult=1.0, weather=1.0):
     )
 
 
+def score_breakdown(tomtom_dev, model_risk, event_mult=1.0, weather=1.0):
+    """Decompose the fixed-weight composite score into its contributing
+    factors so the dashboard can explain *why* a corridor scores as it does.
+    Shares the exact weights of compute_score_fixed, so the parts always add
+    up to that score. Each component's `points` are out of 100."""
+    comps = [
+        ("Live speed reduction", max(0.0, tomtom_dev) * 0.40),
+        ("Breakdown-risk model", max(0.0, model_risk) * 0.35),
+        ("Event context", max(0.0, event_mult - 1) * 0.15),
+        ("Weather", max(0.0, weather - 1) * 0.10),
+    ]
+    components = [{"factor": name, "points": round(v * 100, 1)} for name, v in comps]
+    total = round(sum(c["points"] for c in components), 1)
+    for c in components:
+        c["share"] = round(c["points"] / total * 100) if total else 0
+    return {"total": total, "components": components}
+
+
 class LearnedFusionMLP:
     FEATURE_ORDER = [
         "tomtom_deviation", "model_risk", "event_multiplier",

@@ -36,17 +36,41 @@ def add_corridor_centrality(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# Duration-only bins for impact_level.  road_closure and cause_severity are
+# intentionally EXCLUDED from the label formula: they are model *features*,
+# and including them created circular leakage (AUC ~0.99 by memorising the
+# bucketing rule).  The model now has to discover their predictive value
+# rather than being handed the answer.
+IMPACT_BINS   = [0, 60, 180, 500]          # minutes
+IMPACT_LABELS = ["Low", "Medium", "High"]
+
+
+def compute_impact_level(resolution_min):
+    """Single-incident version of the impact_level binning.  The retraining
+    feedback loop calls this to derive an actual_impact_level from a resolved
+    incident's measured resolution time -- using the SAME bins as the batch
+    target derivation, so train and inference stay consistent.
+
+    Bins (minutes): Low ≤60 | Medium ≤180 | High >180 (capped at 500)."""
+    res = min(max(float(resolution_min), 0.0), 500.0)
+    if res <= IMPACT_BINS[1]:
+        return "Low"
+    if res <= IMPACT_BINS[2]:
+        return "Medium"
+    return "High"
+
+
 def derive_targets(df: pd.DataFrame) -> pd.DataFrame:
     # TARGET 1 -- impact_level (Low / Medium / High)
-    # Weighted composite: resolution time 50%, road closure 30%, cause severity 20%
-    resolution_for_score = df["resolution_min"].fillna(df["resolution_min"].median())
-    score = (
-        resolution_for_score.clip(0, 500) / 500 * 0.5
-        + df["road_closure"] * 0.3
-        + (df["cause_severity"] / df["cause_severity"].max()) * 0.2
-    )
+    # Duration-only bins -- road_closure and cause_severity are excluded to
+    # prevent leakage (they are model features).
+    resolution_clipped = df["resolution_min"].fillna(
+        df["resolution_min"].median()
+    ).clip(0, 500)
     df["impact_level"] = pd.cut(
-        score, bins=[-0.01, 0.33, 0.66, 1.01], labels=["Low", "Medium", "High"]
+        resolution_clipped,
+        bins=[-0.01, 60, 180, 500],
+        labels=IMPACT_LABELS,
     )
 
     # TARGET 2 -- congestion_duration_min

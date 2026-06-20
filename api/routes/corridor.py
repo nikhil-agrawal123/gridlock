@@ -4,25 +4,24 @@ the Live Impact Map dashboard page.
 """
 from datetime import datetime
 
-import joblib
 from fastapi import APIRouter
 
 from api.state import get_event_context
+from modules import model_registry as mr
 from modules.corridor_lookup import get_all_corridors, get_corridor_centroids
 from modules.feature_builder import build_live_features, predict_label
-from modules.fusion import compute_score
+from modules.fusion import compute_score, score_breakdown
 from modules.tomtom_client import get_speeds
+from modules.weather import get_weather_factor
 
 router = APIRouter()
-
-clf = joblib.load("models/trained/impact_clf.pkl")
-reg_dur = joblib.load("models/trained/duration_reg.pkl")
 
 _LATEST_STATE = {}  # corridor -> last computed state, refreshed by the scheduler
 
 
 def get_model_risk(corridor: str) -> float:
     """High/Medium/Low impact_level probability collapsed to a single risk in [0,1]."""
+    clf = mr.get_impact_clf()
     feats = build_live_features(corridor)
     proba = clf.predict_proba(feats)[0]
     classes = list(clf.classes_)
@@ -31,6 +30,7 @@ def get_model_risk(corridor: str) -> float:
 
 
 def compute_corridor_state(corridor: str) -> dict:
+    clf, reg_dur = mr.get_impact_clf(), mr.get_duration_reg()
     now = datetime.now()
     feats = build_live_features(corridor, now)
     impact = predict_label(clf, feats)
@@ -43,10 +43,13 @@ def compute_corridor_state(corridor: str) -> dict:
     speed_data = get_speeds(corridor, float(lat), float(lon))
     model_risk = get_model_risk(corridor)
     event_ctx = get_event_context(corridor)
+    wx = get_weather_factor(float(lat), float(lon))
+    event_mult = event_ctx["congestion_multiplier"]
     score = compute_score(
         speed_data["deviation"], model_risk,
-        event_mult=event_ctx["congestion_multiplier"], hour=now.hour,
+        event_mult=event_mult, weather=wx["factor"], hour=now.hour,
     )
+    breakdown = score_breakdown(speed_data["deviation"], model_risk, event_mult, wx["factor"])
 
     state = {
         "corridor": corridor,
@@ -55,11 +58,15 @@ def compute_corridor_state(corridor: str) -> dict:
         "impact_level": impact,
         "congestion_duration_min": duration,
         "composite_score": score,
+        "score_breakdown": breakdown["components"],
         "tomtom_deviation": speed_data["deviation"],
         "tomtom_current_speed": speed_data["current_speed"],
         "tomtom_free_flow_speed": speed_data["free_flow_speed"],
         "tomtom_road_closure": speed_data["road_closure"],
         "tomtom_is_mock": speed_data["is_mock"],
+        "weather_factor": wx["factor"],
+        "weather_condition": wx["condition"],
+        "weather_is_mock": wx["is_mock"],
         "event_nearby": bool(event_ctx["event_nearby"]),
         "updated_at": now.isoformat(),
     }
