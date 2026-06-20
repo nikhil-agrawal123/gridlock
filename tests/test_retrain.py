@@ -6,11 +6,17 @@ from datetime import datetime, timedelta, timezone
 def test_compute_impact_level_bins():
     from derive_targets import compute_impact_level
 
-    rank = {"Low": 0, "Medium": 1, "High": 2}
+    # Duration-only bins (minutes): Low <=60 | Medium <=180 | High >180.
+    # road_closure / cause_severity are deliberately NOT inputs -- they are
+    # model features, and folding them into the label caused circular leakage.
     assert compute_impact_level(10) == "Low"
-    assert compute_impact_level(480, road_closure=1, cause_severity=5) == "High"
-    # monotonic: a closed road of the same duration is never lower impact
-    assert rank[compute_impact_level(300, road_closure=1)] >= rank[compute_impact_level(300, road_closure=0)]
+    assert compute_impact_level(60) == "Low"        # lower-edge inclusive
+    assert compute_impact_level(120) == "Medium"
+    assert compute_impact_level(180) == "Medium"    # mid-edge inclusive
+    assert compute_impact_level(480) == "High"
+    # clipping: negatives floor to Low, anything past the 500 cap stays High
+    assert compute_impact_level(-5) == "Low"
+    assert compute_impact_level(9999) == "High"
 
 
 def test_feedback_logging_roundtrip(tmp_path, monkeypatch):
