@@ -269,7 +269,6 @@ if "last_brief" in st.session_state:
                         "incident_type": inc_key,
                         "lanes_blocked": lane_key,
                     },
-                    timeout=60,
                 )
                 r.raise_for_status()
                 st.session_state["last_sim"] = r.json()
