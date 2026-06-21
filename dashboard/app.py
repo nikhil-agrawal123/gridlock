@@ -24,7 +24,7 @@ ui.header(
 # --- system status -------------------------------------------------------
 api_ok = False
 try:
-    api_ok = requests.get(f"{API_BASE}/health", timeout=3).ok
+    api_ok = requests.get(f"{API_BASE}/health").ok
 except requests.RequestException:
     api_ok = False
 

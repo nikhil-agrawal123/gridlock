@@ -25,7 +25,7 @@ ui.header(
 
 @st.cache_data(ttl=10)
 def fetch_info():
-    return requests.get(f"{API_BASE}/model-info", timeout=10).json()
+    return requests.get(f"{API_BASE}/model-info").json()
 
 
 try:
@@ -52,7 +52,7 @@ st.caption(f"{max(0, pending)} new resolved incidents since the last retrain.")
 if st.button("Retrain model now", type="primary"):
     with st.spinner("Merging feedback, training candidate, validating against the current model..."):
         try:
-            result = requests.post(f"{API_BASE}/retrain", timeout=300).json()
+            result = requests.post(f"{API_BASE}/retrain").json()
         except requests.RequestException as e:
             st.error(f"Retrain request failed: {e}")
             st.stop()
@@ -91,7 +91,7 @@ if len(versions) > 1:
         target = st.selectbox("Version", [v["version"] for v in versions])
         if st.button("Roll back"):
             try:
-                r = requests.post(f"{API_BASE}/rollback/{target}", timeout=15).json()
+                r = requests.post(f"{API_BASE}/rollback/{target}").json()
                 st.cache_data.clear()
                 if r.get("status") == "rolled_back":
                     st.success(f"Rolled back — active model is now {r['current']}.")

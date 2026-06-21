@@ -31,7 +31,7 @@ def _inr(n):
 
 @st.cache_data(ttl=15)
 def fetch_system_kpis():
-    r = requests.get(f"{API_BASE}/kpis/system", timeout=15)
+    r = requests.get(f"{API_BASE}/kpis/system")
     r.raise_for_status()
     return r.json()
 

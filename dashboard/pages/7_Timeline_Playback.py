@@ -27,7 +27,7 @@ PLAY_SPEED_S = 0.7
 
 @st.cache_data(ttl=300)
 def fetch_timeline():
-    r = requests.get(f"{API_BASE}/timeline/corridors", params={"hours": 24}, timeout=60)
+    r = requests.get(f"{API_BASE}/timeline/corridors", params={"hours": 24})
     r.raise_for_status()
     return r.json()
 

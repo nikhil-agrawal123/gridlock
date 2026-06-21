@@ -160,7 +160,7 @@ if st.button("Generate deployment brief", type="primary"):
             payload["end_lat"] = end_lat
             payload["end_lon"] = end_lon
         try:
-            resp = requests.post(f"{API_BASE}/event-impact", json=payload, timeout=60)
+            resp = requests.post(f"{API_BASE}/event-impact", json=payload)
             resp.raise_for_status()
             st.session_state["last_brief"] = resp.json()
             st.session_state.pop("last_sim", None)  # stale scenario from a prior brief
@@ -457,7 +457,7 @@ if "last_brief" in st.session_state:
 
     if st.button("Event started — activate live monitoring (Phase 2)"):
         try:
-            r = requests.post(f"{API_BASE}/event/activate-phase2/{brief['event_id']}", timeout=10)
+            r = requests.post(f"{API_BASE}/event/activate-phase2/{brief['event_id']}")
             r.raise_for_status()
             st.success(f"Phase 2 active — monitoring {len(r.json()['monitoring'])} corridors.")
         except requests.RequestException as e:

@@ -21,10 +21,10 @@ ui.header(
 @st.cache_data(ttl=60)
 def fetch_states(horizon_min=0):
     if horizon_min <= 0:
-        resp = requests.get(f"{API_BASE}/corridors/all", timeout=20)
+        resp = requests.get(f"{API_BASE}/corridors/all")
     else:
         resp = requests.get(f"{API_BASE}/corridors/projected",
-                            params={"horizon_min": horizon_min}, timeout=40)
+                            params={"horizon_min": horizon_min})
     resp.raise_for_status()
     return resp.json()
 
@@ -121,7 +121,7 @@ ui.corridor_rail(states)
 # --- active incidents (Mark Resolved) ---
 ui.section("Active incidents")
 try:
-    active = requests.get(f"{API_BASE}/incidents/active", timeout=10).json()
+    active = requests.get(f"{API_BASE}/incidents/active").json()
 except requests.RequestException:
     active = []
 
@@ -146,7 +146,6 @@ if active:
                     r = requests.post(
                         f"{API_BASE}/incident/{inc['incident_id']}/resolve",
                         params={"actual_corridor_count": 1},
-                        timeout=10,
                     ).json()
                     st.success(f"✓ {inc['corridor']} resolved — feeds next retrain")
                     st.rerun()
@@ -178,7 +177,6 @@ if sel:
         try:
             ex = requests.get(
                 f"{API_BASE}/explain/corridor/{requests.utils.quote(sel, safe='')}",
-                timeout=30,
             ).json()
             st.markdown(
                 f"Forecast {ui.level_badge(ex['predicted_impact'])} "
