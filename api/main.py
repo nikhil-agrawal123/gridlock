@@ -25,7 +25,10 @@ app.include_router(insights.router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://gridlock-7ukmkh6fmg6csfwjbqnbvj.streamlit.app/", "http://localhost:8501"],
+    allow_origins=[
+        "https://gridlock-7ukmkh6fmg6csfwjbqnbvj.streamlit.app",  # no trailing slash: must match the browser Origin exactly
+        "http://localhost:8501",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -9,8 +9,11 @@ services:
     # 512 MB will likely OOM. Use a paid plan with more RAM for a stable deploy.
     plan: starter
     buildCommand: pip install -r requirements.txt
-    # python -m api.main binds 0.0.0.0:$PORT via the __main__ block in api/main.py.
-    startCommand: python -m api.main
+    # Bind 0.0.0.0:$PORT so Render's proxy can reach the service. Heavy imports
+    # (osmnx/catboost) make cold start take ~20-30s, during which Render logs
+    # "No open ports detected, continuing to scan..." -- it binds once imports
+    # finish. The road graph itself loads lazily on first request, not at boot.
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION

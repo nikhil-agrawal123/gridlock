@@ -40,6 +40,7 @@ with c2:
             f"Can't reach the API at {API_BASE}. Start it with "
             "`uvicorn api.main:app --port 8000`."
         )
+ui.section("Note")
 
 # --- navigation guide ----------------------------------------------------
 ui.section("Where to go")

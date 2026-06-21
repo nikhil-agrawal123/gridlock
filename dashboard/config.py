@@ -8,4 +8,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-API_BASE = os.environ.get("TRAFFICSENSE_API", "http://localhost:8000")
+# Hosted FastAPI backend (Render). Override with TRAFFICSENSE_API for local dev,
+# e.g. set TRAFFICSENSE_API=http://localhost:8000 when running the API locally.
+API_BASE = os.environ.get(
+    "TRAFFICSENSE_API", "https://gridlock-fpzs.onrender.com"
+).rstrip("/")

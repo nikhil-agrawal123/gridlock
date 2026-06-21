@@ -6,8 +6,6 @@ __pycache__/
 cache/
 catboost_info/
 .run/
-data/*.graphml
-data/*.pkl
 Astram event data_anonymized*.csv
 .env
 skills-lock.json
@@ -15,3 +13,4 @@ data/feedback/
 models/current/
 models/versions/
 models/registry.json
+.pytest_cache/
