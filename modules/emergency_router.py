@@ -70,9 +70,15 @@ def _path_metrics(G, path, node_factor):
     return dist / 1000, mins, {c for c in corridors if c}
 
 
-def get_emergency_route(venue_lat, venue_lon, impact_map):
+def get_emergency_route(venue_lat, venue_lon, impact_map,
+                        blocked_latlon=None, block_radius_m=180):
     """Returns the ambulance plan, or None if no route is found.
-    impact_map: {corridor: 'Low'|'Medium'|'High'} from the event forecast."""
+    impact_map: {corridor: 'Low'|'Medium'|'High'} from the event forecast.
+
+    blocked_latlon: an optional (lat, lon) physical blockage (e.g. an
+    overturned truck). The nodes within block_radius_m of it are *removed*
+    from the routable graph, so the green corridor is forced to go around the
+    blockage rather than merely treating its corridor as congested."""
     Gfull = get_graph()
     Gs = get_simple_graph()
     hosp = nearest_hospital(venue_lat, venue_lon)
@@ -94,6 +100,20 @@ def get_emergency_route(venue_lat, venue_lon, impact_map):
         return None
     if origin not in Glocal or dest not in Glocal or origin == dest:
         return None
+
+    # Physical blockage: drop the road around the incident from the graph so
+    # the route must detour around it (origin/dest are never removed).
+    if blocked_latlon is not None:
+        blat, blon = blocked_latlon
+        blocked = {
+            n for n, d in Glocal.nodes(data=True)
+            if _haversine_km(blat, blon, d["y"], d["x"]) * 1000 <= block_radius_m
+        }
+        blocked.discard(origin)
+        blocked.discard(dest)
+        Glocal.remove_nodes_from(blocked)
+        if origin not in Glocal or dest not in Glocal:
+            return None
 
     # Per-node congestion factor from the corridor it sits on.
     node_factor = {}
