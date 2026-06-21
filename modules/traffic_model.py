@@ -24,7 +24,6 @@ equilibrium. Background load is seeded from each corridor's forecast impact leve
 the assignment starts from the congestion the rest of the app already predicts.
 """
 import math
-from functools import lru_cache
 
 import networkx as nx
 
@@ -124,34 +123,31 @@ def _haversine_km(lat1, lon1, lat2, lon2):
 
 
 # --- local assignment graph -------------------------------------------------
-@lru_cache(maxsize=1)
-def _augmented_graph():
-    """City-wide directed graph carrying cap/t0/length per edge, derived once from
-    the OSM graph and cached (parallel edges collapsed to the highest-capacity
-    one). Per-request we just bbox-subgraph this, so the expensive attribute
-    parsing happens a single time for the process -- cheap on every incident sim."""
-    G = get_graph()
-    A = nx.DiGraph()
-    for n, d in G.nodes(data=True):
-        A.add_node(n, y=d["y"], x=d["x"])
-    for u, v, d in G.edges(data=True):
-        cap = edge_capacity(d)
-        if A.has_edge(u, v) and cap <= A[u][v]["cap"]:
-            continue
-        A.add_edge(u, v, cap=cap, t0=edge_freeflow_hr(d), length=d.get("length", 1.0))
-    return A
-
-
 def _build_local_graph(venue_lat, venue_lon, inc_lat, inc_lon):
-    """A directed local subgraph around venue+incident with cap/t0/len per edge."""
-    A = _augmented_graph()
+    """Directed local subgraph around venue+incident with cap/t0/len per edge.
+
+    Built transiently from the shared OSM graph and discarded after the request,
+    so it adds no persistent memory. (We deliberately do NOT cache a full-city
+    augmented copy -- that would pin a second graph in RAM alongside get_graph /
+    get_simple_graph, and the backend is memory-bound.)"""
+    G = get_graph()
     lat_lo = min(venue_lat, inc_lat) - BBOX_MARGIN_DEG
     lat_hi = max(venue_lat, inc_lat) + BBOX_MARGIN_DEG
     lon_lo = min(venue_lon, inc_lon) - BBOX_MARGIN_DEG
     lon_hi = max(venue_lon, inc_lon) + BBOX_MARGIN_DEG
-    local = [n for n, d in A.nodes(data=True)
-             if lat_lo < d["y"] < lat_hi and lon_lo < d["x"] < lon_hi]
-    return A.subgraph(local).copy()
+
+    H = nx.DiGraph()
+    for n, d in G.nodes(data=True):
+        if lat_lo < d["y"] < lat_hi and lon_lo < d["x"] < lon_hi:
+            H.add_node(n, y=d["y"], x=d["x"])
+    for u, v, d in G.edges(data=True):
+        if u not in H or v not in H:
+            continue
+        cap = edge_capacity(d)
+        if H.has_edge(u, v) and cap <= H[u][v]["cap"]:
+            continue
+        H.add_edge(u, v, cap=cap, t0=edge_freeflow_hr(d), length=d.get("length", 1.0))
+    return H
 
 
 def _nearest_node(H, lat, lon):
