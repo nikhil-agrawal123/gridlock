@@ -40,7 +40,7 @@ with c2:
             f"Can't reach the API at {API_BASE}. Start it with "
             "`uvicorn api.main:app --port 8000`."
         )
-ui.section("Note")
+ui.section("Note : The backend is hosted on Render, so it may take a few seconds to wake up if it hasn't been used recently. If the API is offline, please wait a few seconds and refresh the page.")
 
 # --- navigation guide ----------------------------------------------------
 ui.section("Where to go")
