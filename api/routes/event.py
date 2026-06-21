@@ -292,6 +292,21 @@ def simulate_incident(event_id: str, incident: IncidentInput):
     }
     extra_officers = 2 + sum(1 for ch in changes if ch["role"] == "spillover")
 
+    # 5) network-impact model: prove the reroute actually helps (and whether it
+    # just moves the jam) via a hostable BPR traffic assignment on the road graph.
+    from modules import traffic_model as tmodel
+
+    try:
+        network_impact = tmodel.compare_incident(
+            brief["_anchor_lat"], brief["_anchor_lon"],
+            incident.lat, incident.lon,
+            lanes_blocked=incident.lanes_blocked,
+            attendance=brief.get("_attendance", 40000),
+            impact_map=cascaded_map,
+        )
+    except Exception as e:  # never let the model break the rest of the brief
+        network_impact = {"ok": False, "reason": f"network model error: {e}"}
+
     return {
         "event": brief["event"],
         "incident": {
@@ -325,6 +340,7 @@ def simulate_incident(event_id: str, incident: IncidentInput):
         "kpi_cost": cost_managed,
         "readiness_saving": readiness_saving,
         "assumptions": sim.ASSUMPTIONS,
+        "network_impact": network_impact,
     }
 
 

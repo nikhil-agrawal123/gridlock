@@ -36,3 +36,12 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    # Render (and most PaaS) inject the port to bind via $PORT; default to 8000
+    # for local runs. Bind 0.0.0.0 so the platform's proxy can reach the service.
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run("api.main:app", host="0.0.0.0", port=port)

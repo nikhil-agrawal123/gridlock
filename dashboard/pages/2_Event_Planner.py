@@ -400,6 +400,61 @@ if "last_brief" in st.session_state:
         elif sim["emergency_status"] == "degraded":
             st.warning(f'⚠ Ambulance ETA worsens by {sim["emergency_eta_delta_min"]} min routing around the blockage.')
 
+        # --- network-impact model: does the diversion actually help? ----------
+        ni = sim.get("network_impact") or {}
+        if ni.get("ok"):
+            st.markdown("**Network impact — does the diversion actually help?**")
+            st.caption(
+                "Traffic-assignment model (BPR) on the road graph: the same crowd, "
+                "drivers **uninformed** (stay on the blocked route, pile up) vs **guided** "
+                "around the closure. Total network delay over the arrival window."
+            )
+            vog, ic = ni["value_of_guidance"], ni["incident_cost"]
+            saved_accent = ui.GREEN if vog["guidance_helps"] else ui.AMBER
+            ui.readouts([
+                {"label": "No guidance", "value": f'{ni["no_reroute"]["total_delay_veh_h"]:,.0f} veh-h',
+                 "sub": f'{ni["no_reroute"]["avg_delay_min_per_trip"]:.0f} min/trip', "accent": ui.RED},
+                {"label": "With guidance", "value": f'{ni["with_reroute"]["total_delay_veh_h"]:,.0f} veh-h',
+                 "sub": f'{ni["with_reroute"]["avg_delay_min_per_trip"]:.0f} min/trip', "accent": ui.GREEN},
+                {"label": "Delay saved by guidance", "value": f'{vog["total_veh_hours_saved"]:,.0f} veh-h',
+                 "sub": f'~{vog["avg_delay_saved_min"]:.0f} min/trip', "accent": saved_accent},
+                {"label": "Incident cost", "value": f'{ic["extra_veh_hours_vs_baseline"]:,.0f} veh-h',
+                 "sub": f'+{ic["avg_delay_added_min"]:.0f} min/trip vs normal event', "accent": ui.AMBER},
+            ])
+
+            shift = [r for r in ni.get("corridor_shift", []) if r["no_reroute_veh_h"] >= 1]
+            if shift:
+                st.markdown("**Per-corridor delay — without vs with guidance** "
+                            f"<span style='color:{ui.STEEL};font-size:.8rem'>· veh-hours; "
+                            "the diversion should clear the incident corridor without spiking another</span>",
+                            unsafe_allow_html=True)
+                for r in shift:
+                    relieved = r["delta_veh_h"] < 0
+                    col = ui.GREEN if relieved else ui.AMBER
+                    tag = "cleared" if relieved else "absorbs"
+                    st.markdown(
+                        f'<span class="ts-badge" style="background:{col}">{tag}</span> '
+                        f'**{r["corridor"]}** '
+                        f'<span style="color:{ui.STEEL};font-size:.82rem">'
+                        f'{r["no_reroute_veh_h"]:,.0f} → {r["with_reroute_veh_h"]:,.0f} veh-h '
+                        f'({r["delta_veh_h"]:+,.0f})</span>',
+                        unsafe_allow_html=True,
+                    )
+
+            if vog["guidance_helps"]:
+                ui.why_card(
+                    "Guidance pays off",
+                    [f'Pushing the diversion cuts network delay by <b>{vog["total_veh_hours_saved"]:,.0f} '
+                     f'veh-hours</b> (~<b>{vog["avg_delay_saved_min"]:.0f} min/trip</b>): the blocked '
+                     f'corridor clears and traffic spreads to roads with spare capacity, instead of '
+                     f'piling up behind the incident.'],
+                    tag=f'−{vog["total_veh_hours_saved"]:,.0f} veh-h', accent=ui.GREEN,
+                )
+            st.caption("Model: BPR static traffic assignment (α=0.15, β=4); road capacity & "
+                       "free-flow speed by OSM class. A fast planning estimate, not a microsimulation.")
+        elif ni.get("reason"):
+            st.caption(f'Network-impact model unavailable: {ni["reason"]}')
+
     if st.button("Event started — activate live monitoring (Phase 2)"):
         try:
             r = requests.post(f"{API_BASE}/event/activate-phase2/{brief['event_id']}", timeout=10)

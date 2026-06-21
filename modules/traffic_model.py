@@ -24,6 +24,7 @@ equilibrium. Background load is seeded from each corridor's forecast impact leve
 the assignment starts from the congestion the rest of the app already predicts.
 """
 import math
+from functools import lru_cache
 
 import networkx as nx
 
@@ -45,7 +46,7 @@ DEFAULT_LANES = {"motorway": 2, "trunk": 2, "primary": 2, "secondary": 2}
 _DEFAULT_CAP, _DEFAULT_KMH, _DEFAULT_LANES = 800, 30.0, 1
 
 BPR_ALPHA, BPR_BETA = 0.15, 4.0
-VOC_CAP = 6.0          # clamp V/C so a single overloaded edge can't blow up BPR
+VOC_CAP = 5.0          # clamp V/C so a blocked edge can't blow BPR to infinity
 
 # Background saturation (V/C) seeded per edge from its corridor's forecast level.
 BG_SAT = {"High": 0.85, "Medium": 0.55, "Low": 0.30}
@@ -60,6 +61,7 @@ N_CHUNKS = 4          # incremental-loading steps toward equilibrium
 BBOX_MARGIN_DEG = 0.03  # ~3 km padding around venue+incident for detour room
 
 # Closed-edge capacity multiplier by how much of the carriageway is blocked.
+# full closure removes the edge for the guided case; the others throttle it.
 LANES_BLOCK_FACTOR = {"full": 0.02, "partial": 0.40, "single": 0.50}
 
 ASSUMPTIONS = {
@@ -122,29 +124,34 @@ def _haversine_km(lat1, lon1, lat2, lon2):
 
 
 # --- local assignment graph -------------------------------------------------
-def _build_local_graph(venue_lat, venue_lon, inc_lat, inc_lon):
-    """A directed local subgraph around venue+incident with cap/t0/len per edge.
-    Parallel edges are collapsed keeping the highest-capacity one."""
+@lru_cache(maxsize=1)
+def _augmented_graph():
+    """City-wide directed graph carrying cap/t0/length per edge, derived once from
+    the OSM graph and cached (parallel edges collapsed to the highest-capacity
+    one). Per-request we just bbox-subgraph this, so the expensive attribute
+    parsing happens a single time for the process -- cheap on every incident sim."""
     G = get_graph()
+    A = nx.DiGraph()
+    for n, d in G.nodes(data=True):
+        A.add_node(n, y=d["y"], x=d["x"])
+    for u, v, d in G.edges(data=True):
+        cap = edge_capacity(d)
+        if A.has_edge(u, v) and cap <= A[u][v]["cap"]:
+            continue
+        A.add_edge(u, v, cap=cap, t0=edge_freeflow_hr(d), length=d.get("length", 1.0))
+    return A
+
+
+def _build_local_graph(venue_lat, venue_lon, inc_lat, inc_lon):
+    """A directed local subgraph around venue+incident with cap/t0/len per edge."""
+    A = _augmented_graph()
     lat_lo = min(venue_lat, inc_lat) - BBOX_MARGIN_DEG
     lat_hi = max(venue_lat, inc_lat) + BBOX_MARGIN_DEG
     lon_lo = min(venue_lon, inc_lon) - BBOX_MARGIN_DEG
     lon_hi = max(venue_lon, inc_lon) + BBOX_MARGIN_DEG
-
-    H = nx.DiGraph()
-    for n, d in G.nodes(data=True):
-        if lat_lo < d["y"] < lat_hi and lon_lo < d["x"] < lon_hi:
-            H.add_node(n, y=d["y"], x=d["x"])
-    for u, v, d in G.edges(data=True):
-        if u not in H or v not in H:
-            continue
-        cap = edge_capacity(d)
-        t0 = edge_freeflow_hr(d)
-        if H.has_edge(u, v):
-            if cap <= H[u][v]["cap"]:
-                continue
-        H.add_edge(u, v, cap=cap, t0=t0, length=d.get("length", 1.0))
-    return H
+    local = [n for n, d in A.nodes(data=True)
+             if lat_lo < d["y"] < lat_hi and lon_lo < d["x"] < lon_hi]
+    return A.subgraph(local).copy()
 
 
 def _nearest_node(H, lat, lon):
@@ -235,7 +242,10 @@ def assign_all_or_nothing(G, bg, origins, dest, q_per_origin_hr):
 
 
 def _metrics(H, V, t, edge_corr, event_trips):
-    """System delay + per-corridor delay (veh-hours) for one scenario state."""
+    """System delay (veh-h) + per-corridor delay (veh-h) for one scenario. The
+    per-corridor delay is what the 'did the jam move?' table compares: under
+    no_reroute the incident corridor piles up; under with_reroute it should clear
+    without a new corridor spiking."""
     total_delay = 0.0
     corridor_delay = {}
     for u, v, d in H.edges(data=True):
@@ -266,34 +276,42 @@ def _edge_corridors(H):
 
 
 # --- the three-scenario comparison ------------------------------------------
-def _closed_graph(H, incident_edge, lanes_blocked):
-    """Apply the blockage: a full closure removes the edge; a partial/single
-    closure shrinks its capacity. Returns a working copy."""
-    Hc = H.copy()
-    factor = LANES_BLOCK_FACTOR.get(lanes_blocked, 0.02)
-    u, v = incident_edge
-    if lanes_blocked == "full" or factor <= 0.05:
-        Hc.remove_edge(u, v)
-    else:
-        Hc[u][v]["cap"] = max(1.0, Hc[u][v]["cap"] * factor)
-    return Hc
+def _incident_edges(H, lat, lon, dest):
+    """The blocked road segment: the nearest edge plus its reverse direction (a
+    real incident closes one carriageway, not a whole junction -- so we keep it to
+    that segment to avoid magnitude swings from how dense the local junction is).
+    Edges touching the venue node are excluded so the destination is never sealed."""
+    e = _nearest_edge(H, lat, lon)
+    if e is None or dest in e:
+        return set()
+    blocked = {e}
+    rev = (e[1], e[0])
+    if H.has_edge(*rev) and dest not in rev:
+        blocked.add(rev)
+    return blocked
 
 
 def compare_incident(venue_lat, venue_lon, inc_lat, inc_lon,
                      lanes_blocked="full", attendance=40000, impact_map=None):
     """Run baseline / no_reroute / with_reroute and return the comparison the
-    dashboard renders. Pure NetworkX on the already-loaded graph; ~1-3s."""
+    dashboard renders. Pure NetworkX on the already-loaded graph; ~1-3s.
+
+    no_reroute models uninformed drivers: they pick their usual routes (computed
+    on uncongested times), so traffic stays on the incident corridor and piles up
+    against the throttled edges. with_reroute re-assigns around the closure, so
+    the incident corridor clears but the detour load lands on other corridors --
+    that redistribution is the corridor_shift table."""
     H = _build_local_graph(venue_lat, venue_lon, inc_lat, inc_lon)
     if H.number_of_edges() < 20:
         return {"ok": False, "reason": "Too few roads near the venue/incident to model."}
 
     dest = _nearest_node(H, venue_lat, venue_lon)
-    incident_edge = _nearest_edge(H, inc_lat, inc_lon)
-    if incident_edge is None:
-        return {"ok": False, "reason": "No road found at the incident location."}
     origins = [o for o in _pick_origins(H, dest) if o != dest]
     if not origins:
         return {"ok": False, "reason": "Could not place demand origins around the venue."}
+    blocked = _incident_edges(H, inc_lat, inc_lon, dest)
+    if not blocked:
+        return {"ok": False, "reason": "No road found at the incident location."}
 
     vehicles_total = attendance * CAR_SHARE / OCCUPANCY
     q_per_origin_hr = vehicles_total / ARRIVAL_WINDOW_HR / len(origins)
@@ -301,20 +319,30 @@ def compare_incident(venue_lat, venue_lon, inc_lat, inc_lon,
 
     bg = _background(H, impact_map)
     edge_corr = _edge_corridors(H)
+    factor = LANES_BLOCK_FACTOR.get(lanes_blocked, 0.02)
+    full = lanes_blocked == "full" or factor <= 0.05
 
     # baseline: all roads open, equilibrium assignment
     V_base, t_base = assign_equilibrium(H, bg, origins, dest, q_per_origin_hr)
     base_m = _metrics(H, V_base, t_base, edge_corr, event_trips)
 
-    # incident closes the road; same demand, two driver responses
-    Hc = _closed_graph(H, incident_edge, lanes_blocked)
-    bg_c = {e: bg[e] for e in Hc.edges()}
-
-    # no_reroute: uninformed drivers concentrate on usual routes (all-or-nothing)
-    V_no, t_no = assign_all_or_nothing(Hc, bg_c, origins, dest, q_per_origin_hr)
-    no_m = _metrics(Hc, V_no, t_no, edge_corr, event_trips)
+    # no_reroute: uninformed drivers keep usual routes; blocked edges throttled so
+    # the traffic on them piles up (edges kept in the graph to hold the pile-up).
+    Hn = H.copy()
+    for u, v in blocked:
+        Hn[u][v]["cap"] = max(1.0, Hn[u][v]["cap"] * (factor if not full else 0.02))
+    V_no, _ = assign_all_or_nothing(H, bg, origins, dest, q_per_origin_hr)
+    t_no = _times(Hn, V_no)
+    no_m = _metrics(Hn, V_no, t_no, edge_corr, event_trips)
 
     # with_reroute: guided drivers spread around the closure (equilibrium)
+    Hc = H.copy()
+    if full:
+        Hc.remove_edges_from(blocked)
+    else:
+        for u, v in blocked:
+            Hc[u][v]["cap"] = max(1.0, Hc[u][v]["cap"] * factor)
+    bg_c = {e: bg[e] for e in Hc.edges()}
     V_re, t_re = assign_equilibrium(Hc, bg_c, origins, dest, q_per_origin_hr)
     re_m = _metrics(Hc, V_re, t_re, edge_corr, event_trips)
 
@@ -348,12 +376,14 @@ def compare_incident(venue_lat, venue_lon, inc_lat, inc_lon,
 
 
 def _corridor_shift(no_delay, re_delay, top=6):
-    """Per-corridor delay change (with_reroute - no_reroute). Negative = guidance
-    relieved it; positive = the diversion pushed traffic onto it."""
+    """Per-corridor delay (veh-h) under no_reroute vs with_reroute, led by the
+    corridors hit hardest when drivers don't divert. Negative delta = guidance
+    cleared it (the relieved incident corridor); a large positive delta would mean
+    the diversion pushed the jam onto that corridor instead."""
     rows = []
     for c in set(no_delay) | set(re_delay):
         before, after = no_delay.get(c, 0.0), re_delay.get(c, 0.0)
-        rows.append({"corridor": c, "before_veh_h": round(before, 1),
-                     "after_veh_h": round(after, 1), "delta_veh_h": round(after - before, 1)})
-    rows.sort(key=lambda r: abs(r["delta_veh_h"]), reverse=True)
+        rows.append({"corridor": c, "no_reroute_veh_h": round(before, 1),
+                     "with_reroute_veh_h": round(after, 1), "delta_veh_h": round(after - before, 1)})
+    rows.sort(key=lambda r: r["no_reroute_veh_h"], reverse=True)
     return rows[:top]

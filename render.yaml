@@ -1,0 +1,17 @@
+# Render blueprint for the Gridlock FastAPI backend.
+# The Streamlit dashboard is hosted separately (Streamlit Community Cloud); point
+# its TRAFFICSENSE_API env var at this service's URL.
+services:
+  - type: web
+    name: gridlock-api
+    runtime: python
+    # The road graph is large in memory once loaded by NetworkX; the free plan's
+    # 512 MB will likely OOM. Use a paid plan with more RAM for a stable deploy.
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    # python -m api.main binds 0.0.0.0:$PORT via the __main__ block in api/main.py.
+    startCommand: python -m api.main
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
