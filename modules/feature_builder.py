@@ -20,18 +20,37 @@ CAUSE_SEVERITY_BY_EVENT = {"rally": 4, "festival": 4, "sports": 3, "construction
 def get_corridor_stats():
     df = pd.read_parquet(FEATURED_PATH)
     mode_or = lambda default: (lambda s: s.mode().iat[0] if not s.mode().empty else default)
+
+    def dominant(default, ignore):
+        """Most common *informative* value for a corridor, ignoring placeholder /
+        noise categories ('unknown', 'none', -1) so the corridor is described by
+        its real dominant vehicle type / breakdown cause / blackspot cluster
+        rather than the missing-data mode. Falls back to the overall mode, then
+        the default, only when the corridor has no informative value at all."""
+        ignore = set(ignore)
+
+        def agg(s):
+            informative = s[~s.isin(ignore)]
+            m = informative.mode()
+            if not m.empty:
+                return m.iat[0]
+            m = s.mode()
+            return m.iat[0] if not m.empty else default
+
+        return agg
+
     agg = df.groupby("corridor").agg(
-        hotspot_id=("hotspot_id", mode_or(-1)),
+        hotspot_id=("hotspot_id", dominant(-1, ignore=(-1,))),
         congestion_index=("congestion_index", "mean"),
         corridor_centrality_max=("corridor_centrality_max", "max"),
         cause_severity=("cause_severity", "mean"),
         road_closure=("road_closure", "mean"),
         incident_density_24h=("incident_density_24h", "mean"),
-        veh_type=("veh_type", mode_or("unknown")),
+        veh_type=("veh_type", dominant("unknown", ignore=("unknown",))),
         nlp_severity_score=("nlp_severity_score", "mean"),
         description_length=("description_length", "mean"),
         has_kannada=("has_kannada", lambda s: int(s.mean() > 0.5)),
-        reason_breakdown_clean=("reason_breakdown_clean", mode_or("none")),
+        reason_breakdown_clean=("reason_breakdown_clean", dominant("none", ignore=("none",))),
     )
     return agg
 

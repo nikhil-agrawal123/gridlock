@@ -18,3 +18,7 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      # Render runs in UTC; force IST so datetime.now() (hour-of-day features,
+      # the live forecast clock) matches Bengaluru local time.
+      - key: TZ
+        value: Asia/Kolkata
