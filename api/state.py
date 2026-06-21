@@ -14,9 +14,13 @@ def compute_multiplier(attendance):
     return 1.0 + min(1.5, attendance / 40000 * 0.5)
 
 
-def get_event_context(corridor):
+def get_event_context(corridor, at=None):
+    """Event pressure on a corridor at time ``at`` (defaults to now). Passing a
+    future ``at`` lets the forecast projection check whether an active event is
+    still inside its window at the horizon being projected."""
+    at = at or datetime.now()
     for ev in ACTIVE_EVENTS.values():
-        if corridor in ev["corridors"] and datetime.now() < ev["end_time"]:
+        if corridor in ev["corridors"] and at < ev["end_time"]:
             return {
                 "event_nearby": 1,
                 "congestion_multiplier": ev["multiplier"],
