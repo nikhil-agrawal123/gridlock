@@ -1,0 +1,25 @@
+name: Keep Render backend warm
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: keep-warm
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      URL: ${{ vars.RENDER_BACKEND_URL || 'https://gridlock-fpzs.onrender.com/health' }}
+    steps:
+      - name: Ping backend every 45s for ~5 minutes
+        run: |
+          for i in $(seq 1 6); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$URL" || echo "000")
+            echo "ping $i -> HTTP $code  ($(date -u +%H:%M:%S)Z)  $URL"
+            if [ "$i" -lt 6 ]; then sleep 45; fi
+          done
