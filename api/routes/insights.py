@@ -23,16 +23,22 @@ _RISK_W = {"Low": 0.0, "Medium": 0.5, "High": 1.0}
 
 @router.get("/explain/corridor/{corridor}")
 def explain_corridor(corridor: str):
-    """Why the model forecasts this corridor's impact level the way it does."""
-    from api.routes.corridor import compute_corridor_state
+    """Why the model forecasts this corridor's impact level the way it does.
+
+    SHAP-only and fast: it deliberately does NOT recompute the live corridor
+    state, which would re-hit the TomTom + weather APIs and could blow past the
+    client's request timeout. The composite score (when shown) is read from the
+    cached state already populated by /corridors/all and the 15-min scheduler.
+    """
+    from api.routes.corridor import _LATEST_STATE
 
     feats = build_live_features(corridor)
     explanation = explainer.explain_impact(feats)
-    state = compute_corridor_state(corridor)
+    state = _LATEST_STATE.get(corridor, {})
     return {
         "corridor": corridor,
         "model_version": mr.current_version(),
-        "composite_score": state["composite_score"],
+        "composite_score": state.get("composite_score"),
         "score_breakdown": state.get("score_breakdown", []),
         **explanation,
     }

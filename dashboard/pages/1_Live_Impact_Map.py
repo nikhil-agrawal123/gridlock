@@ -178,7 +178,7 @@ if sel:
         try:
             ex = requests.get(
                 f"{API_BASE}/explain/corridor/{requests.utils.quote(sel, safe='')}",
-                timeout=20,
+                timeout=30,
             ).json()
             st.markdown(
                 f"Forecast {ui.level_badge(ex['predicted_impact'])} "
