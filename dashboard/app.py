@@ -44,8 +44,10 @@ with c2:
 # --- navigation guide ----------------------------------------------------
 ui.section("Where to go")
 cards = [
-    ("Live Impact Map", "Every corridor's live risk score, refreshed from TomTom traffic flow."),
-    ("Event Planner", "Generate a full deployment brief for an upcoming event."),
+    ("Live Impact Map", "Every corridor's live risk score, with the model's reasoning for each forecast."),
+    ("Event Planner", "Generate a full deployment brief — and its projected time, fuel and money saved."),
+    ("Impact Dashboard", "What the deployments buy the city: hours, litres, rupees and CO₂ saved."),
+    ("Timeline Playback", "Scrub or play through a model-forecast day of corridor risk."),
     ("Resource Deployment", "Officer counts, deploy times and barricade points for the latest brief."),
     ("Diversion Routes", "Alternate routing around the latest brief's closures."),
 ]

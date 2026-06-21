@@ -163,6 +163,7 @@ if st.button("Generate deployment brief", type="primary"):
             resp = requests.post(f"{API_BASE}/event-impact", json=payload, timeout=60)
             resp.raise_for_status()
             st.session_state["last_brief"] = resp.json()
+            st.session_state.pop("last_sim", None)  # stale scenario from a prior brief
         except requests.RequestException as e:
             st.error(f"Request failed: {e}")
             st.stop()
@@ -195,6 +196,210 @@ if "last_brief" in st.session_state:
     if wx and not wx.get("forecast_available"):
         st.caption("⚠ Event is beyond the 3-day weather forecast window — weather assumed neutral in the prediction.")
 
+    ek = brief.get("kpis")
+    if ek:
+        ui.section("Projected impact")
+        st.caption("Forecast savings vs an unmanaged event — full breakdown and assumptions on the Impact Dashboard.")
+        money = ek["money_saved_inr"]
+        money_lbl = (f"₹{money/1e7:.2f} Cr" if money >= 1e7
+                     else f"₹{money/1e5:.2f} L" if money >= 1e5 else f"₹{money:,.0f}")
+        ui.kpi_hero([
+            {"label": "Time saved", "value": f'{ek["time_saved_hours"]:,.0f}', "unit": "veh-hrs"},
+            {"label": "Fuel saved", "value": f'{ek["fuel_saved_litres"]:,.0f}', "unit": "L"},
+            {"label": "Money saved", "value": money_lbl},
+            {"label": "CO₂ avoided", "value": f'{ek["co2_avoided_kg"]:,.0f}', "unit": "kg"},
+            {"label": "Vehicles affected", "value": f'{ek["vehicles_affected"]:,}'},
+        ])
+
+    # --- compound scenario: concurrent unplanned incident -----------------
+    ui.section("Compound scenario — concurrent incident")
+    st.caption(
+        "What if an unplanned incident strikes mid-event — a truck overturns "
+        "and blocks a road? Drop it on the map to fold it into the live plan: "
+        "clearance time, corridor cascade, re-routed diversions and the cost it adds."
+    )
+
+    INC_TYPES = {
+        "truck_overturn": "Truck overturn / heavy vehicle",
+        "multi_collision": "Multi-vehicle collision",
+        "car_accident": "Car accident / breakdown",
+        "debris": "Debris / stalled vehicle",
+    }
+    LANE_LABELS = {"full": "Full closure", "partial": "Partial (2 lanes)", "single": "Single lane"}
+
+    st.session_state.setdefault("sim_inc_lat", lat)
+    st.session_state.setdefault("sim_inc_lon", lon)
+
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        inc_label = st.selectbox("Incident type", list(INC_TYPES.values()))
+        inc_key = next(k for k, v in INC_TYPES.items() if v == inc_label)
+    with sc2:
+        lane_label = st.selectbox("Carriageway blocked", list(LANE_LABELS.values()))
+        lane_key = next(k for k, v in LANE_LABELS.items() if v == lane_label)
+
+    st.caption("Click the map to place the incident (defaults to the venue).")
+    inc_map = folium.Map(
+        location=[st.session_state["sim_inc_lat"], st.session_state["sim_inc_lon"]],
+        zoom_start=13, tiles="cartodbpositron",
+    )
+    folium.Marker([lat, lon], tooltip="Venue",
+                  icon=folium.Icon(color="blue", icon="star")).add_to(inc_map)
+    folium.Marker(
+        [st.session_state["sim_inc_lat"], st.session_state["sim_inc_lon"]],
+        tooltip="Incident", icon=folium.Icon(color="red", icon="warning-sign"),
+    ).add_to(inc_map)
+    inc_data = st_folium(inc_map, height=320, use_container_width=True, key="incident_picker")
+    inc_clicked = inc_data.get("last_clicked") if inc_data else None
+    if inc_clicked:
+        cc = (round(inc_clicked["lat"], 6), round(inc_clicked["lng"], 6))
+        if cc != st.session_state.get("sim_inc_last_click"):
+            st.session_state["sim_inc_last_click"] = cc
+            st.session_state["sim_inc_lat"], st.session_state["sim_inc_lon"] = cc
+            st.rerun()
+
+    if st.button("Simulate concurrent incident", key="sim_incident_btn"):
+        with st.spinner("Folding the incident into the live plan..."):
+            try:
+                r = requests.post(
+                    f"{API_BASE}/event/simulate-incident/{brief['event_id']}",
+                    json={
+                        "lat": st.session_state["sim_inc_lat"],
+                        "lon": st.session_state["sim_inc_lon"],
+                        "incident_type": inc_key,
+                        "lanes_blocked": lane_key,
+                    },
+                    timeout=60,
+                )
+                r.raise_for_status()
+                st.session_state["last_sim"] = r.json()
+            except requests.RequestException as e:
+                st.error(f"Simulation failed: {e}")
+
+    sim = st.session_state.get("last_sim")
+    if sim and sim.get("incident"):
+        cl = sim["clearance"]
+        cost = sim["kpi_cost"]
+        money = cost["money_cost_inr"]
+        cost_lbl = (f"₹{money/1e7:.2f} Cr" if money >= 1e7
+                    else f"₹{money/1e5:.2f} L" if money >= 1e5 else f"₹{money:,.0f}")
+        em_accent = {"ok": ui.GREEN, "rerouted": ui.AMBER, "degraded": ui.AMBER,
+                     "severed": ui.RED}.get(sim["emergency_status"], ui.NAVY)
+
+        ui.readouts([
+            {"label": "Clearance time", "value": f'{cl["managed_min"]} min',
+             "sub": f'vs {cl["unmanaged_min"]} min unmanaged', "accent": ui.RED},
+            {"label": "Incident corridor", "value": sim["incident"]["corridor"],
+             "sub": sim["incident"]["type"], "accent": ui.RED},
+            {"label": "Cost of incident", "value": cost_lbl,
+             "sub": "added delay while open", "accent": ui.AMBER},
+            {"label": "Emergency route", "value": sim["emergency_status"].upper(),
+             "sub": (f'+{sim["emergency_eta_delta_min"]} min'
+                     if sim.get("emergency_eta_delta_min") else "green corridor"),
+             "accent": em_accent},
+        ])
+
+        col_cl, col_cas = st.columns(2)
+        with col_cl:
+            st.markdown("**Clearance time — how it's built**")
+            for f in cl["factors"]:
+                st.markdown(
+                    f'<div class="ts-readout-sub" style="margin:.15rem 0">'
+                    f'<b>{f["value"]}</b> · {f["factor"]} <span style="color:{ui.STEEL}">'
+                    f'({f["detail"]})</span></div>',
+                    unsafe_allow_html=True,
+                )
+        with col_cas:
+            st.markdown("**Corridor cascade**")
+            for ch in sim["cascade"]["changes"]:
+                before = ui.level_badge(ch["before"]) if ch["before"] in ("Low", "Medium", "High") else ch["before"]
+                st.markdown(
+                    f'{before} → {ui.level_badge(ch["after"])} '
+                    f'**{ch["corridor"]}** '
+                    f'<span style="color:{ui.STEEL};font-size:.8rem">· {ch["role"]}</span>',
+                    unsafe_allow_html=True,
+                )
+            st.caption(f'{sim["cascade"]["corridors_affected"]} corridors affected '
+                       f'(spillover within {sim["cascade"]["spillover_km"]} km).')
+
+        rs = sim["readiness_saving"]
+        if rs["minutes"] > 0:
+            rs_money = rs["money_inr"]
+            rs_lbl = (f"₹{rs_money/1e5:.2f} L" if rs_money >= 1e5 else f"₹{rs_money:,.0f}")
+            res = sim["resources"]
+            staged = []
+            if res["tow_prepositioned"]:
+                staged.append("a tow truck was pre-positioned on the corridor")
+            if res["officer_present"]:
+                staged.append("an officer was already deployed there")
+            ui.why_card(
+                "Readiness paid off",
+                [f'Because {" and ".join(staged) or "the corridor was staffed"}, the blockage '
+                 f'clears in <b>{cl["managed_min"]} min</b> instead of <b>{cl["unmanaged_min"]} min</b> '
+                 f'— avoiding ~<b>{rs_lbl}</b> of additional delay.'],
+                tag=f'-{rs["minutes"]} min', accent=ui.GREEN,
+            )
+        elif sim["resources"]["tow_truck_needed"] and not sim["resources"]["tow_prepositioned"]:
+            ui.why_card(
+                "No tow truck staged here",
+                ['This is a heavy-vehicle blockage but no tow truck was pre-positioned on '
+                 'the incident corridor — a tow must be dispatched, stretching clearance. '
+                 'Add a tow truck under <b>Available resources</b> and regenerate to pre-stage one.'],
+                tag="dispatch delay", accent=ui.AMBER,
+            )
+
+        st.markdown(
+            f'Response need: <b>+{sim["resources"]["extra_officers"]} officers</b>'
+            + (' · <b>+1 tow truck</b>' if sim["resources"]["tow_truck_needed"] else ''),
+            unsafe_allow_html=True,
+        )
+
+        # diversions re-routed around the blockage
+        da = sim.get("diversions_after", [])
+        st.markdown("**Diversions, re-routed around the blockage**")
+        delta = sim["diversion_delta_min"]
+        st.caption(
+            f'Detours now steer around {sim["incident"]["corridor"]} (forced High). '
+            + (f'Average detour +{delta} min longer than the clean-event plan.'
+               if delta > 0 else 'Detour length broadly unchanged.')
+        )
+        em_after = sim.get("emergency_after") or {}
+        em_before = sim.get("emergency_before") or {}
+        if da or em_after.get("path_coords"):
+            scen_center = [sim["incident"]["lat"], sim["incident"]["lon"]]
+            dm = folium.Map(location=scen_center, zoom_start=13, tiles="cartodbpositron")
+            folium.Marker([lat, lon], tooltip="Venue",
+                          icon=folium.Icon(color="blue", icon="star")).add_to(dm)
+            ui.barricade_marker(folium, sim["incident"]["lat"], sim["incident"]["lon"],
+                                "HIGH", popup=f'{sim["incident"]["type"]} — blocked').add_to(dm)
+            for i, rte in enumerate(da, 1):
+                folium.PolyLine(rte["path_coords"], color=ui.NAVY, weight=5, opacity=0.8,
+                                tooltip=f'Route {i} · +{rte["added_minutes"]} min').add_to(dm)
+            # Original green corridor (now blocked) shown faded for contrast.
+            if sim.get("incident_on_green_corridor") and em_before.get("path_coords"):
+                folium.PolyLine(em_before["path_coords"], color="#B0B7C3", weight=4,
+                                opacity=0.7, dash_array="6",
+                                tooltip=f'Original green corridor · {em_before.get("eta_min", "?")} min (blocked)').add_to(dm)
+            if em_after.get("path_coords"):
+                folium.PolyLine(em_after["path_coords"], color=ui.GREEN, weight=5, opacity=0.9,
+                                tooltip=f'Ambulance · {em_after["eta_min"]} min').add_to(dm)
+            st_folium(dm, height=380, use_container_width=True, key="scenario_map")
+        if not da:
+            st.caption("No viable diversion found around the blockage — corridor may be severed.")
+
+        if sim["emergency_status"] == "severed":
+            st.error("⚠ Emergency green corridor is severed by the blockage — no ambulance route reaches the venue around it.")
+        elif sim.get("incident_on_green_corridor"):
+            extra = (f' (+{sim["emergency_eta_delta_min"]} min)'
+                     if sim.get("emergency_eta_delta_min") else "")
+            st.warning(
+                f'⚠ Incident sits **on the ambulance green corridor** '
+                f'({sim.get("green_corridor_gap_m", 0)} m from it) — '
+                f'route rebuilt around the blockage{extra}.'
+            )
+        elif sim["emergency_status"] == "degraded":
+            st.warning(f'⚠ Ambulance ETA worsens by {sim["emergency_eta_delta_min"]} min routing around the blockage.')
+
     if st.button("Event started — activate live monitoring (Phase 2)"):
         try:
             r = requests.post(f"{API_BASE}/event/activate-phase2/{brief['event_id']}", timeout=10)
@@ -205,6 +410,44 @@ if "last_brief" in st.session_state:
 
     ui.section("Impact forecast")
     ui.impact_forecast_table(brief["affected_corridors"])
+
+    # --- why this recommendation? -----------------------------------------
+    ui.section("Why this recommendation?")
+    st.caption("The reasoning behind each part of the plan, traced back to the forecast.")
+
+    opt = brief.get("optimized_plan", brief["manpower_plan"])
+    top_officers = sorted(opt, key=lambda p: -p["officers"])[:3]
+    officer_points = [f'<b>{p["corridor"]}</b>: {p.get("rationale", "")}' for p in top_officers]
+    officer_points.append(
+        f'Coverage <b>{brief.get("coverage_pct", 100)}%</b> of the '
+        f'{brief.get("officers_required", 0)}-officer need'
+        + (f' — {brief.get("unmet_officers", 0)} short, high-impact corridors first.'
+           if brief.get("coverage_pct", 100) < 100 else "."))
+    ui.why_card("Officer deployment", officer_points,
+                tag=f'{brief.get("officers_used", 0)}/{brief.get("officers_required", 0)}')
+
+    n_bar = len(brief["barricade_points"])
+    ui.why_card("Barricade cordon", [
+        "Placed where busy boundary roads ∩ predicted high-impact corridors ∩ historical incident hotspots.",
+        f"<b>{n_bar}</b> points kept within budget, ranked by road betweenness.",
+    ], tag=f"{n_bar} points")
+
+    routes = brief.get("diversion_routes", [])
+    if routes:
+        div_points = [
+            f'<b>Route {i}</b>: +{r["added_minutes"]} min detour, steering around '
+            f'{", ".join(r["spillover_corridors"]) or "open roads"}'
+            for i, r in enumerate(routes, 1)
+        ]
+        ui.why_card("Diversion routes", div_points, tag=f"{len(routes)} routes")
+
+    em = brief.get("emergency_route")
+    if em:
+        avoided = ", ".join(em.get("avoided_corridors", [])) or "no congested corridors"
+        ui.why_card("Emergency green corridor", [
+            f'Routes to <b>{em["hospital"]}</b> ({em["distance_km"]} km), '
+            f'<b>{em["time_saved_min"]} min</b> faster than the naive path, avoiding {avoided}.',
+        ], tag=f'+{em["time_saved_min"]} min')
 
     ui.section("Officer deployment (optimized)")
     if coverage < 100:

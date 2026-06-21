@@ -180,6 +180,62 @@ iframe[title="streamlit_folium.st_folium"] { border:1px solid var(--line); borde
 
 /* inputs a touch softer */
 [data-baseweb="input"], [data-baseweb="select"] > div { border-radius:9px; }
+
+/* --- motion (subtle; disabled for reduced-motion) --- */
+@keyframes tsFadeUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+@keyframes tsGrow { from { transform:scaleX(0); } to { transform:scaleX(1); } }
+.ts-readout, .ts-kpi, .ts-kpi-headline, .ts-force, .ts-why { animation:tsFadeUp .4s ease both; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation:none !important; transition:none !important; }
+}
+
+/* --- KPI: one big headline figure + supporting instrument readouts --- */
+.ts-kpi-headline {
+  background:linear-gradient(180deg,#ffffff,#fbfcfd);
+  border:1px solid var(--line); border-left:4px solid var(--accent,var(--navy));
+  border-radius:16px; padding:26px 30px; margin-bottom:16px;
+}
+.ts-kpi-headline .lab { font-size:.75rem; letter-spacing:.14em; text-transform:uppercase; color:var(--steel); font-weight:600; }
+.ts-kpi-headline .val { font-family:'IBM Plex Mono',monospace; font-weight:600; color:var(--ink);
+  font-size:4rem; line-height:1; letter-spacing:-.02em; margin:.35rem 0 .25rem; }
+.ts-kpi-headline .val span { font-size:1.5rem; color:var(--steel); margin-left:.45rem; }
+.ts-kpi-headline .cap { color:var(--steel); font-size:.92rem; }
+
+.ts-kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(176px,1fr)); gap:14px; }
+.ts-kpi { background:var(--surface); border:1px solid var(--line); border-radius:13px;
+  padding:18px 20px; position:relative; overflow:hidden; }
+.ts-kpi::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--accent,var(--navy)); }
+.ts-kpi .lab { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--steel); font-weight:600; }
+.ts-kpi .val { font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:1.9rem; color:var(--ink); line-height:1; margin-top:.45rem; }
+.ts-kpi .val span { font-size:.88rem; color:var(--steel); margin-left:.25rem; }
+.ts-kpi .cap { font-size:.76rem; color:var(--steel); margin-top:.45rem; }
+
+/* --- SHAP force bars: red pushes toward High, green pulls toward Low --- */
+.ts-force { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:16px 18px; }
+.ts-force-row { display:grid; grid-template-columns:190px 1fr; gap:14px; align-items:center; margin:.42rem 0; }
+.ts-force-meta { text-align:right; }
+.ts-force-meta .f { font-size:.84rem; color:var(--ink); font-weight:500; line-height:1.15; }
+.ts-force-meta .v { font-family:'IBM Plex Mono',monospace; font-size:.72rem; color:var(--steel); }
+.ts-force-track { position:relative; height:24px; background:#F1F3F6; border-radius:6px; }
+.ts-force-track::before { content:""; position:absolute; left:50%; top:0; bottom:0; width:1px; background:#C9D0D9; }
+.ts-force-bar { position:absolute; top:4px; bottom:4px; border-radius:4px; transform-origin:var(--origin,left); animation:tsGrow .5s ease both; }
+.ts-force-legend { display:flex; justify-content:space-between; font-size:.72rem; color:var(--steel); margin-top:.55rem; }
+
+/* --- "why" rationale card --- */
+.ts-why { background:var(--surface); border:1px solid var(--line); border-left:4px solid var(--accent,var(--navy));
+  border-radius:12px; padding:14px 18px; margin-bottom:12px; }
+.ts-why-title { font-weight:600; color:var(--ink); font-size:.96rem; margin-bottom:.5rem;
+  display:flex; align-items:center; gap:.5rem; }
+.ts-why-title .tag { font-family:'IBM Plex Mono',monospace; font-size:.7rem; color:var(--steel);
+  border:1px solid var(--line); border-radius:5px; padding:.1rem .42rem; }
+.ts-why ul { margin:0; padding-left:1.1rem; }
+.ts-why li { color:var(--steel); font-size:.86rem; margin:.26rem 0; }
+.ts-why li b { color:var(--ink); font-weight:600; }
+
+/* --- timeline playback clock --- */
+.ts-clock { display:flex; align-items:baseline; gap:.6rem; }
+.ts-clock .t { font-family:'IBM Plex Mono',monospace; font-size:2.4rem; font-weight:600; color:var(--ink); line-height:1; }
+.ts-clock .d { font-size:.78rem; color:var(--steel); text-transform:uppercase; letter-spacing:.1em; }
 </style>
 """,
         unsafe_allow_html=True,
@@ -347,6 +403,86 @@ def impact_forecast_table(corridors):
         "Est. clearance": st.column_config.NumberColumn("Est. clearance", format="%d min"),
     }
     st.dataframe(df, use_container_width=True, hide_index=True, column_config=cfg)
+
+
+# --- KPI / explainability / timeline components ---------------------------
+KPI_ACCENTS = [NAVY, "#3E7CB1", "#1B9C8E", "#4C5FD5"]
+
+
+def kpi_headline(value, unit, label, caption="", accent=NAVY):
+    """The single hero figure on the Impact Dashboard -- the page's thesis."""
+    st.markdown(
+        f'<div class="ts-kpi-headline" style="--accent:{accent}">'
+        f'<div class="lab">{_esc(label)}</div>'
+        f'<div class="val">{_esc(value)}<span>{_esc(unit)}</span></div>'
+        f'<div class="cap">{_esc(caption)}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def kpi_hero(items):
+    """Supporting instrument readouts. items: {label, value, unit?, caption?, accent?}."""
+    cards = []
+    for i, it in enumerate(items):
+        accent = it.get("accent", KPI_ACCENTS[i % len(KPI_ACCENTS)])
+        unit = f'<span>{_esc(it["unit"])}</span>' if it.get("unit") else ""
+        cap = f'<div class="cap">{_esc(it["caption"])}</div>' if it.get("caption") else ""
+        cards.append(
+            f'<div class="ts-kpi" style="--accent:{accent}">'
+            f'<div class="lab">{_esc(it["label"])}</div>'
+            f'<div class="val">{_esc(it["value"])}{unit}</div>{cap}</div>'
+        )
+    st.markdown(f'<div class="ts-kpi-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+
+def shap_force(contributions):
+    """Diverging force plot of a model decision. contributions: list of
+    {label, value, contribution, direction}. Red bars (right) push the forecast
+    toward High impact; green bars (left) pull it toward Low -- the same signal
+    language the rest of the console uses."""
+    if not contributions:
+        return
+    maxabs = max(abs(c["contribution"]) for c in contributions) or 1.0
+    rows = []
+    for c in contributions:
+        frac = abs(c["contribution"]) / maxabs * 46  # half-track max width %
+        if c["direction"] == "up":
+            bar = f'<span class="ts-force-bar" style="left:50%;width:{frac}%;background:{RED};--origin:left"></span>'
+        else:
+            bar = f'<span class="ts-force-bar" style="right:50%;width:{frac}%;background:{GREEN};--origin:right"></span>'
+        rows.append(
+            f'<div class="ts-force-row">'
+            f'<div class="ts-force-meta"><div class="f">{_esc(c["label"])}</div>'
+            f'<div class="v">{_esc(c["value"])}</div></div>'
+            f'<div class="ts-force-track">{bar}</div></div>'
+        )
+    st.markdown(
+        f'<div class="ts-force">{"".join(rows)}'
+        f'<div class="ts-force-legend"><span>&larr; pulls toward Low</span>'
+        f'<span>pushes toward High &rarr;</span></div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def why_card(title, points, tag=None, accent=NAVY):
+    """A 'why this recommendation' card. `points` are pre-formatted strings
+    (may contain <b>...</b>); `tag` is a small monospace badge (e.g. a count)."""
+    tag_html = f'<span class="tag">{_esc(tag)}</span>' if tag else ""
+    lis = "".join(f"<li>{p}</li>" for p in points)
+    st.markdown(
+        f'<div class="ts-why" style="--accent:{accent}">'
+        f'<div class="ts-why-title">{_esc(title)}{tag_html}</div>'
+        f"<ul>{lis}</ul></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def timeline_clock(hour, date_str=""):
+    st.markdown(
+        f'<div class="ts-clock"><span class="t">{hour:02d}:00</span>'
+        f'<span class="d">{_esc(date_str)}</span></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def historical_blockage_table(corridors):

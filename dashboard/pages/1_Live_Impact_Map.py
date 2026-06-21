@@ -19,20 +19,34 @@ ui.header(
 
 
 @st.cache_data(ttl=60)
-def fetch_states():
-    resp = requests.get(f"{API_BASE}/corridors/all", timeout=20)
+def fetch_states(horizon_min=0):
+    if horizon_min <= 0:
+        resp = requests.get(f"{API_BASE}/corridors/all", timeout=20)
+    else:
+        resp = requests.get(f"{API_BASE}/corridors/projected",
+                            params={"horizon_min": horizon_min}, timeout=40)
     resp.raise_for_status()
     return resp.json()
 
 
+HORIZONS = {"Now": 0, "+30 min": 30, "+1 hour": 60, "+2 hours": 120}
+
 head_l, head_r = st.columns([3, 1])
+with head_l:
+    sel_horizon = st.radio(
+        "Outlook", list(HORIZONS), horizontal=True, label_visibility="collapsed",
+        help="Project every corridor forward. Live readings are blended toward the "
+             "model's forecast for that time — the further out, the more the model leads.",
+    )
+horizon_min = HORIZONS[sel_horizon]
+forecasting = horizon_min > 0
 with head_r:
     if st.button("Refresh now", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
 try:
-    states = fetch_states()
+    states = fetch_states(horizon_min)
 except requests.RequestException as e:
     st.error(f"Couldn't reach the API at {API_BASE}: {e}")
     st.stop()
@@ -44,11 +58,23 @@ peak = max(states, key=lambda c: c["composite_score"]) if states else None
 
 wx = states[0] if states else {}
 wx_live = bool(states) and not wx.get("weather_is_mock")
-with head_l:
+fc_hour = states[0].get("forecast_hour") if forecasting and states else None
+if forecasting:
+    ui.pill(f"FORECAST · {sel_horizon} (~{fc_hour:02d}:00)", ui.AMBER)
+else:
     ui.pill("TomTom traffic flow · LIVE" if live else "TomTom traffic flow · MOCK",
             ui.GREEN if live else ui.AMBER)
-    if wx_live and wx.get("weather_condition"):
-        ui.pill(f"Weather · {wx['weather_condition']} (×{wx['weather_factor']})", ui.NAVY)
+if wx_live and wx.get("weather_condition"):
+    ui.pill(f"Weather · {wx['weather_condition']} (×{wx['weather_factor']})", ui.NAVY)
+
+if forecasting:
+    pers = states[0].get("live_persistence", 0) if states else 0
+    st.info(
+        f"Projected **{sel_horizon}** ahead (~{fc_hour:02d}:00). Live speed readings are "
+        f"blended **{pers*100:.0f}% live / {(1-pers)*100:.0f}% model forecast** for that "
+        f"hour — the further out you look, the more the breakdown-risk model leads. "
+        f"Weather held at current; event pressure re-checked for that time."
+    )
 
 ui.readouts([
     {"label": "Corridors", "value": len(states), "sub": "monitored", "accent": ui.NAVY},
@@ -130,12 +156,38 @@ else:
     st.caption("No open incidents.")
 
 # --- explainability ---
-ui.section("Why these scores?")
-st.caption("Every score decomposes into the factors that built it — live speed, the breakdown-risk model, event context and weather.")
+ui.section("Why this recommendation?")
+st.caption("Two layers of explanation — how the composite score was built, and the model's own reasoning for the impact-level forecast.")
+if forecasting:
+    st.caption(f"Composite make-up reflects the **{sel_horizon}** projection; the model "
+               f"reasoning panel below explains current conditions.")
 ranked = sorted(states, key=lambda c: -c["composite_score"])
-for c in ranked[:5]:
-    if c.get("score_breakdown"):
-        ui.score_bars(c["corridor"], c["composite_score"], c["score_breakdown"])
+sel = st.selectbox("Corridor", [c["corridor"] for c in ranked]) if ranked else None
+
+if sel:
+    sel_state = next(c for c in states if c["corridor"] == sel)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("**Composite score make-up**")
+        if sel_state.get("score_breakdown"):
+            ui.score_bars(sel, sel_state["composite_score"], sel_state["score_breakdown"])
+        else:
+            st.caption("No breakdown available.")
+    with col_b:
+        st.markdown("**Model reasoning · impact forecast**")
+        try:
+            ex = requests.get(
+                f"{API_BASE}/explain/corridor/{requests.utils.quote(sel, safe='')}",
+                timeout=20,
+            ).json()
+            st.markdown(
+                f"Forecast {ui.level_badge(ex['predicted_impact'])} "
+                f"<span style='color:{ui.STEEL};font-size:.82rem'>· model {ex['model_version']}</span>",
+                unsafe_allow_html=True,
+            )
+            ui.shap_force(ex["contributions"])
+        except requests.RequestException as e:
+            st.caption(f"Couldn't load model explanation: {e}")
 
 # --- full table ---
 ui.section("All corridor readings")
