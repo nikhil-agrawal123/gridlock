@@ -11,5 +11,5 @@ if _PROJECT_ROOT not in sys.path:
 # Hosted FastAPI backend (Render). Override with TRAFFICSENSE_API for local dev,
 # e.g. set TRAFFICSENSE_API=http://localhost:8000 when running the API locally.
 API_BASE = os.environ.get(
-    "TRAFFICSENSE_API", "https://gridlock-fpzs.onrender.com"
+    "TRAFFICSENSE_API"
 ).rstrip("/")
