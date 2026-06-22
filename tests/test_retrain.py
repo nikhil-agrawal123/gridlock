@@ -38,6 +38,35 @@ def test_feedback_logging_roundtrip(tmp_path, monkeypatch):
     assert fb.resolved_count() == 1
 
 
+def test_manual_report_roundtrip(tmp_path, monkeypatch):
+    """An officer's manual report writes a linked prediction+outcome pair that
+    counts as a resolved incident (so the retrain merge picks it up)."""
+    from modules import feedback_logger as fb
+
+    monkeypatch.setattr(fb, "PREDICTIONS_DIR", tmp_path / "predictions")
+    monkeypatch.setattr(fb, "OUTCOMES_DIR", tmp_path / "outcomes")
+
+    started = datetime(2026, 6, 22, 9, 0, tzinfo=timezone.utc)
+    iid = fb.log_manual_report(
+        corridor="Hosur Road",
+        features={"hour": 9, "veh_type": "truck", "cause_severity": 4},
+        started_at=started,
+        resolved_at=started + timedelta(minutes=200),   # >180 -> High
+        actual_corridor_count=3,
+        predicted={"impact_level": "Medium", "duration_min": 90},
+        notes="overturned truck blocking two lanes",
+    )
+    assert iid
+    # both snapshots written and joinable -> one resolved incident
+    assert fb.resolved_count() == 1
+    # a manual report is already resolved, so it must NOT register as open
+    assert not fb.has_open_incident("Hosur Road")
+
+    outs = fb._read_all(fb.OUTCOMES_DIR)
+    assert outs.iloc[0]["actual_impact_level"] == "High"
+    assert outs.iloc[0]["resolution_method"] == "officer_report"
+
+
 def test_model_registry_seed_and_rollback():
     from modules import model_registry as mr
 

@@ -43,10 +43,11 @@ def _append_parquet(directory: Path, record: dict, when: datetime):
 
 
 def log_prediction(corridor, features, impact, duration, corridor_count,
-                   score, event_ctx, model_version):
+                   score, event_ctx, model_version, source="auto"):
     """Snapshot A. `features` is the dict of model inputs at prediction time.
     Returns the incident_id and registers the corridor as having an open
-    incident."""
+    incident. `source` ('auto' for the tracker, 'officer_report' for a manual
+    submission) is recorded so the two origins stay auditable."""
     now = _now()
     incident_id = str(uuid.uuid4())
     record = {
@@ -60,6 +61,7 @@ def log_prediction(corridor, features, impact, duration, corridor_count,
         "composite_score": float(score),
         "event_context": json.dumps(event_ctx) if event_ctx else None,
         "model_version": model_version,
+        "source": source,
     }
     _append_parquet(PREDICTIONS_DIR, record, now)
     OPEN_INCIDENTS[corridor] = {
@@ -71,7 +73,7 @@ def log_prediction(corridor, features, impact, duration, corridor_count,
 
 
 def log_outcome(incident_id, predicted_at, resolved_at, actual_corridor_count,
-                resolution_method, officer_present=False):
+                resolution_method, officer_present=False, source="auto"):
     """Snapshot B. Derives actual_resolution_min + actual_impact_level (same
     duration-only binning as target derivation) and appends the outcome row."""
     if isinstance(predicted_at, str):
@@ -85,8 +87,67 @@ def log_outcome(incident_id, predicted_at, resolved_at, actual_corridor_count,
         "actual_corridor_count": int(actual_corridor_count),
         "resolution_method": resolution_method,
         "officer_present": bool(officer_present),
+        "source": source,
     }
     _append_parquet(OUTCOMES_DIR, record, resolved_at)
+
+
+def log_manual_report(corridor, features, started_at, resolved_at,
+                      actual_corridor_count, predicted=None, notes="",
+                      reported_by="officer"):
+    """Officer-submitted ground truth for a *resolved* incident the automatic
+    tracker never caught (a data gap, a missed onset, or simply richer detail
+    than TomTom can infer). Writes BOTH the prediction (A) and outcome (B)
+    snapshots at once -- the feature context and the actual outcome are both
+    already known -- so the next retrain learns from it exactly like a tracked
+    incident (it joins the two on incident_id). Tagged source='officer_report'
+    so manual rows stay auditable and separable from auto-collected ones.
+
+    `predicted` is an optional {impact_level, duration_min, corridor_count,
+    score, model_version} dict (what the current model would have called it),
+    stored for comparison only -- retrain learns from the actual_* columns, not
+    the predicted_* ones, so the report can't poison the labels.
+
+    Returns the incident_id.
+    """
+    if isinstance(started_at, str):
+        started_at = datetime.fromisoformat(started_at)
+    if isinstance(resolved_at, str):
+        resolved_at = datetime.fromisoformat(resolved_at)
+    actual_min = max(0.0, (resolved_at - started_at).total_seconds() / 60)
+    actual_impact = compute_impact_level(actual_min)
+    pred = predicted or {}
+    incident_id = str(uuid.uuid4())
+
+    pred_record = {
+        "incident_id": incident_id,
+        "predicted_at": started_at.isoformat(),
+        "corridor": corridor,
+        "feature_snapshot": json.dumps(features, default=str),
+        # No live model call required: fall back to the actuals so the row is
+        # well-formed even when the model comparison is unavailable.
+        "predicted_impact_level": str(pred.get("impact_level", actual_impact)),
+        "predicted_duration_min": int(pred.get("duration_min", round(actual_min))),
+        "predicted_corridor_count": int(pred.get("corridor_count", actual_corridor_count)),
+        "composite_score": float(pred.get("score", 0.0)),
+        "event_context": None,
+        "model_version": pred.get("model_version", "officer_report"),
+        "source": "officer_report",
+        "notes": str(notes),
+        "reported_by": str(reported_by),
+    }
+    _append_parquet(PREDICTIONS_DIR, pred_record, started_at)
+
+    log_outcome(
+        incident_id=incident_id,
+        predicted_at=started_at,
+        resolved_at=resolved_at,
+        actual_corridor_count=actual_corridor_count,
+        resolution_method="officer_report",
+        officer_present=True,
+        source="officer_report",
+    )
+    return incident_id
 
 
 # --- open-incident helpers (used by the scheduler) -----------------------

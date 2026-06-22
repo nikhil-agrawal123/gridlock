@@ -23,9 +23,27 @@ ui.header(
 )
 
 
+# Officer-report dropdowns -- the categories the model was trained on.
+CAUSES = [
+    "general_breakdown", "engine_problem", "brake_problem", "tyre_puncture",
+    "tyre_burst", "electrical_problem", "mechanical_problem", "gear_problem",
+    "clutch_problem", "steering_problem", "off_road", "diesel_empty",
+    "battery_problem", "oil_leak", "other",
+]
+VEH_TYPES = [
+    "private_car", "bmtc_bus", "ksrtc_bus", "private_bus", "auto", "taxi",
+    "truck", "heavy_vehicle", "lcv", "others", "unknown",
+]
+
+
 @st.cache_data(ttl=10)
 def fetch_info():
     return requests.get(f"{API_BASE}/model-info").json()
+
+
+@st.cache_data(ttl=300)
+def fetch_corridors():
+    return requests.get(f"{API_BASE}/corridors/names").json().get("corridors", [])
 
 
 try:
@@ -75,6 +93,80 @@ if st.button("Retrain model now", type="primary"):
         )
     else:
         st.info(result.get("reason", "Nothing to retrain."))
+
+st.markdown('<hr class="ts-rule"/>', unsafe_allow_html=True)
+ui.section("Log a past incident")
+st.caption(
+    "Officers can record an incident the automatic tracker missed — what went "
+    "wrong and where. It's stored as a labelled, ground-truth example that the "
+    "next retrain learns from, alongside the auto-collected feedback."
+)
+
+try:
+    corridors = fetch_corridors()
+except requests.RequestException:
+    corridors = []
+
+if not corridors:
+    st.info("Couldn't load the corridor list, so manual reporting is unavailable right now.")
+else:
+    with st.form("officer_report", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        r_corridor = c1.selectbox("Corridor (where)", corridors)
+        r_cause = c2.selectbox("What went wrong", CAUSES)
+        r_veh = c3.selectbox("Vehicle involved", VEH_TYPES)
+
+        c4, c5, c6 = st.columns(3)
+        r_sev = c4.slider("Severity", 1, 5, 3, help="1 = minor, 5 = severe")
+        r_dur = c5.number_input("Minutes to clear", min_value=1, max_value=1440, value=60)
+        r_aff = c6.number_input("Corridors affected", min_value=1, max_value=20, value=1)
+
+        c7, c8 = st.columns(2)
+        r_closed = c7.checkbox("Road fully closed")
+        r_planned = c8.checkbox("Planned / known event")
+
+        r_when = st.text_input(
+            "Started at (optional, YYYY-MM-DD HH:MM)", "",
+            help="Leave blank to assume it started this many minutes ago.",
+        )
+        r_notes = st.text_area("Notes (what happened)", "")
+        submitted = st.form_submit_button("Submit report", type="primary")
+
+    if submitted:
+        payload = {
+            "corridor": r_corridor, "cause": r_cause, "veh_type": r_veh,
+            "cause_severity": int(r_sev), "road_closure": bool(r_closed),
+            "is_planned": bool(r_planned), "duration_min": float(r_dur),
+            "corridors_affected": int(r_aff), "notes": r_notes,
+        }
+        if r_when.strip():
+            payload["started_at"] = r_when.strip()
+        try:
+            res = requests.post(f"{API_BASE}/incident/report", json=payload)
+            if res.status_code >= 400:
+                detail = res.json().get("detail", res.text)
+                st.error(f"Report rejected: {detail}")
+            else:
+                res = res.json()
+                st.cache_data.clear()
+                actual = res["actual_impact_level"]
+                pred = res.get("predicted")
+                if pred:
+                    agree = "✓ matched" if pred["impact_level"] == actual else "✗ missed"
+                    st.success(
+                        f"Logged on **{res['corridor']}** — observed impact **{actual}** "
+                        f"({res['actual_resolution_min']:.0f} min). The current model would "
+                        f"have predicted **{pred['impact_level']}** ({agree}). "
+                        f"Now {res['resolved_incidents']} resolved incidents available to retrain."
+                    )
+                else:
+                    st.success(
+                        f"Logged on **{res['corridor']}** — observed impact **{actual}** "
+                        f"({res['actual_resolution_min']:.0f} min). "
+                        f"Now {res['resolved_incidents']} resolved incidents available to retrain."
+                    )
+        except requests.RequestException as e:
+            st.error(f"Couldn't submit the report: {e}")
 
 st.markdown('<hr class="ts-rule"/>', unsafe_allow_html=True)
 ui.section("Version history")
