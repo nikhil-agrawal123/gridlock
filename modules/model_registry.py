@@ -11,11 +11,14 @@ get_corridor_reg(); after a promotion the /retrain endpoint calls reload()
 so the new model is served without a restart.
 """
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
+
+PREDICT_THREADS = int(os.environ.get("CATBOOST_PREDICT_THREADS", "1"))
 
 MODELS_DIR = Path("models")
 TRAINED_DIR = MODELS_DIR / "trained"      # original Day-2 build artifacts
@@ -97,11 +100,11 @@ def _baseline_metrics() -> dict:
         clf = joblib.load(CURRENT_DIR / "impact_clf.pkl")
         reg = joblib.load(CURRENT_DIR / "duration_reg.pkl")
         classes = list(clf.classes_)
-        proba_high = clf.predict_proba(X_te)[:, classes.index("High")]
+        proba_high = clf.predict_proba(X_te, thread_count=PREDICT_THREADS)[:, classes.index("High")]
         auc = float(roc_auc_score((te["impact_level"] == "High").astype(int), proba_high))
         dmask = te["congestion_duration_min"].notna()
         mae = float(mean_absolute_error(te.loc[dmask, "congestion_duration_min"],
-                                        reg.predict(X_te[dmask.values])))
+                                        reg.predict(X_te[dmask.values], thread_count=PREDICT_THREADS)))
         return {"auc": round(auc, 3), "mae": round(mae, 1), "n_train": int(len(df))}
     except Exception:
         return {"auc": 0.0, "mae": 0.0, "n_train": 0}

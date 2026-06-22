@@ -70,9 +70,9 @@ def timeline_corridors(hours: int = 24):
 
     clf, reg = mr.get_impact_clf(), mr.get_duration_reg()
     classes = [str(cl) for cl in clf.classes_]
-    proba = clf.predict_proba(X)
-    durations = reg.predict(X)
-    labels = clf.predict(X).flatten()
+    proba = clf.predict_proba(X, thread_count=mr.PREDICT_THREADS)
+    durations = reg.predict(X, thread_count=mr.PREDICT_THREADS)
+    labels = clf.predict(X, thread_count=mr.PREDICT_THREADS).flatten()
 
     series = {c: [] for c in corridors}
     for i, (c, h) in enumerate(index):

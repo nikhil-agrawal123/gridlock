@@ -66,8 +66,8 @@ def _corridor_risk(corridor, event_type, dt, event_mult, weather_factor):
     clf, reg_dur = mr.get_impact_clf(), mr.get_duration_reg()
     feats = build_event_features(corridor, event_type, dt)
     impact = predict_label(clf, feats)
-    dur = int(reg_dur.predict(feats)[0])
-    proba = clf.predict_proba(feats)[0]
+    dur = int(reg_dur.predict(feats, thread_count=mr.PREDICT_THREADS)[0])
+    proba = clf.predict_proba(feats, thread_count=mr.PREDICT_THREADS)[0]
     classes = list(clf.classes_)
     model_risk = float(sum(p * _RISK_W.get(str(c), 0.5) for p, c in zip(proba, classes)))
     score = compute_score(0.0, model_risk, event_mult=event_mult, weather=weather_factor)

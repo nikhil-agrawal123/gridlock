@@ -5,6 +5,7 @@ the Live Impact Map dashboard page.
 import math
 from datetime import datetime, timedelta
 
+import pandas as pd
 from fastapi import APIRouter
 
 from api.state import get_event_context
@@ -30,7 +31,7 @@ def get_model_risk(corridor: str) -> float:
     """High/Medium/Low impact_level probability collapsed to a single risk in [0,1]."""
     clf = mr.get_impact_clf()
     feats = build_live_features(corridor)
-    proba = clf.predict_proba(feats)[0]
+    proba = clf.predict_proba(feats, thread_count=mr.PREDICT_THREADS)[0]
     classes = list(clf.classes_)
     weights = {"Low": 0.0, "Medium": 0.5, "High": 1.0}
     return float(sum(p * weights.get(str(c), 0.5) for p, c in zip(proba, classes)))
@@ -41,7 +42,7 @@ def compute_corridor_state(corridor: str) -> dict:
     now = datetime.now()
     feats = build_live_features(corridor, now)
     impact = predict_label(clf, feats)
-    duration = int(reg_dur.predict(feats)[0])
+    duration = int(reg_dur.predict(feats, thread_count=mr.PREDICT_THREADS)[0])
 
     lat, lon = get_corridor_centroids().get(corridor, (12.97, 77.59))
     # Pass the corridor's coordinates so the live TomTom Flow Segment Data
@@ -81,29 +82,16 @@ def compute_corridor_state(corridor: str) -> dict:
     return state
 
 
-def project_state(state: dict, horizon_min: int) -> dict:
-    """Project a live corridor state forward by ``horizon_min`` minutes.
-
-    The model component is re-predicted at the future clock (CatBoost knows the
-    daily rhythm); the live TomTom reading is decayed toward that forecast with
-    a persistence weight exp(-horizon/TAU) -- the further out we look, the more
-    the learned pattern leads the stale observation. The event window is
-    re-checked at the horizon and weather is held (no future forecast).
-    ``horizon_min<=0`` returns the live state untouched."""
-    if horizon_min <= 0:
-        return {**state, "is_forecast": False, "horizon_min": 0}
-
+def _assemble_projection(state: dict, horizon_min: int, future: datetime,
+                         impact: str, duration: int, model_risk: float) -> dict:
+    """Build a projected corridor state from an already-predicted (impact,
+    duration, model_risk). The live TomTom reading is decayed toward the
+    forecast with a persistence weight exp(-horizon/TAU) -- the further out we
+    look, the more the learned pattern leads the stale observation. The event
+    window is re-checked at the horizon and weather is held (no future
+    forecast). Pure assembly, no model inference -- so the caller can predict
+    once for many corridors and feed the results in."""
     corridor = state["corridor"]
-    future = datetime.now() + timedelta(minutes=horizon_min)
-    clf, reg_dur = mr.get_impact_clf(), mr.get_duration_reg()
-    feats = build_live_features(corridor, future)
-
-    impact = predict_label(clf, feats)
-    duration = int(reg_dur.predict(feats)[0])
-    proba = clf.predict_proba(feats)[0]
-    classes = list(clf.classes_)
-    model_risk = float(sum(p * _RISK_W.get(str(c), 0.5) for p, c in zip(proba, classes)))
-
     persistence = math.exp(-horizon_min / NOWCAST_TAU_MIN)
     obs_dev = state.get("tomtom_deviation") or 0.0
     proj_dev = max(0.0, min(1.0, persistence * obs_dev + (1 - persistence) * model_risk))
@@ -138,9 +126,37 @@ def project_state(state: dict, horizon_min: int) -> dict:
     }
 
 
+def project_state(state: dict, horizon_min: int) -> dict:
+    """Project a single live corridor state forward by ``horizon_min`` minutes.
+    The model component is re-predicted at the future clock (CatBoost knows the
+    daily rhythm). ``horizon_min<=0`` returns the live state untouched."""
+    if horizon_min <= 0:
+        return {**state, "is_forecast": False, "horizon_min": 0}
+
+    corridor = state["corridor"]
+    future = datetime.now() + timedelta(minutes=horizon_min)
+    clf, reg_dur = mr.get_impact_clf(), mr.get_duration_reg()
+    feats = build_live_features(corridor, future)
+
+    impact = predict_label(clf, feats)
+    duration = int(reg_dur.predict(feats, thread_count=mr.PREDICT_THREADS)[0])
+    proba = clf.predict_proba(feats, thread_count=mr.PREDICT_THREADS)[0]
+    classes = list(clf.classes_)
+    model_risk = float(sum(p * _RISK_W.get(str(c), 0.5) for p, c in zip(proba, classes)))
+
+    return _assemble_projection(state, horizon_min, future, impact, duration, model_risk)
+
+
 @router.get("/corridor-risk/{corridor}")
 def corridor_risk(corridor: str):
     return compute_corridor_state(corridor)
+
+
+@router.get("/corridors/names")
+def corridors_names():
+    """Just the named corridors -- a lightweight list for dropdowns, with no
+    TomTom/model computation (unlike /corridors/all)."""
+    return {"corridors": get_all_corridors()}
 
 
 @router.get("/corridors/all")
@@ -155,9 +171,37 @@ def corridors_all():
 def corridors_projected(horizon_min: int = 30):
     """Same shape as /corridors/all, but every corridor projected ``horizon_min``
     minutes ahead. Reuses the cached live reading as the anchor (no new TomTom
-    calls), so it's fast and consistent with the live map."""
+    calls), so it's fast and consistent with the live map.
+
+    Inference is batched: one predict over all corridors at the projected clock
+    instead of three model calls per corridor. On a CPU-throttled instance that
+    is the difference between a sub-second response and minutes -- previously
+    this was the slowest endpoint and the one that hung the dashboard."""
     horizon_min = max(0, min(180, horizon_min))
-    for corridor in get_all_corridors():
+    corridors = get_all_corridors()
+    for corridor in corridors:
         if corridor not in _LATEST_STATE:
             compute_corridor_state(corridor)
-    return [project_state(_LATEST_STATE[c], horizon_min) for c in get_all_corridors()]
+
+    if horizon_min <= 0:
+        return [{**_LATEST_STATE[c], "is_forecast": False, "horizon_min": 0}
+                for c in corridors]
+
+    future = datetime.now() + timedelta(minutes=horizon_min)
+    clf, reg_dur = mr.get_impact_clf(), mr.get_duration_reg()
+    X = pd.concat([build_live_features(c, future) for c in corridors],
+                  ignore_index=True)
+    labels = clf.predict(X, thread_count=mr.PREDICT_THREADS).flatten()
+    durations = reg_dur.predict(X, thread_count=mr.PREDICT_THREADS)
+    proba = clf.predict_proba(X, thread_count=mr.PREDICT_THREADS)
+    classes = [str(c) for c in clf.classes_]
+
+    out = []
+    for i, corridor in enumerate(corridors):
+        model_risk = float(sum(p * _RISK_W.get(cl, 0.5)
+                               for p, cl in zip(proba[i], classes)))
+        out.append(_assemble_projection(
+            _LATEST_STATE[corridor], horizon_min, future,
+            str(labels[i]), int(durations[i]), model_risk,
+        ))
+    return out

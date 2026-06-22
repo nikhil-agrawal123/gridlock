@@ -48,7 +48,8 @@ def explain_impact(feats_df, top_k=6):
     """
     clf = mr.get_impact_clf()
     pool = Pool(feats_df[FEATURES], cat_features=CAT_FEATURES)
-    shap = clf.get_feature_importance(type="ShapValues", data=pool)
+    shap = clf.get_feature_importance(type="ShapValues", data=pool,
+                                      thread_count=mr.PREDICT_THREADS)
 
     # Shape is (n_obj, n_features+1) for binary / single-class output, or
     # (n_obj, n_classes, n_features+1) for multiclass. Normalise to the row +
@@ -72,7 +73,7 @@ def explain_impact(feats_df, top_k=6):
     ]
     contribs.sort(key=lambda c: -abs(c["contribution"]))
 
-    predicted = str(clf.predict(feats_df[FEATURES])[0][0])
+    predicted = str(clf.predict(feats_df[FEATURES], thread_count=mr.PREDICT_THREADS)[0][0])
     return {
         "predicted_impact": predicted,
         "base_value": round(base_value, 4),

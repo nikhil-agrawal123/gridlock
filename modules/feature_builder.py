@@ -66,9 +66,15 @@ def _is_peak_hour(hour):
     return 1 if (4 <= hour < 7 or 19 <= hour < 23) else 0
 
 
-def predict_label(clf, feats):
-    """CatBoostClassifier.predict returns a (1,1) object array -- unwrap to a plain str."""
-    return str(clf.predict(feats)[0][0])
+def predict_label(clf, feats, thread_count=None):
+    """CatBoostClassifier.predict returns a (1,1) object array -- unwrap to a plain str.
+
+    thread_count is pinned (model_registry.PREDICT_THREADS) so a single-row
+    predict doesn't fan out across every host core on a CPU-throttled box."""
+    from modules.model_registry import PREDICT_THREADS
+
+    tc = PREDICT_THREADS if thread_count is None else thread_count
+    return str(clf.predict(feats, thread_count=tc)[0][0])
 
 
 def build_event_features(corridor, event_type, dt: datetime):
