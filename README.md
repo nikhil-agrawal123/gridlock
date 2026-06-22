@@ -1,3 +1,13 @@
+---
+title: Gridlock API
+emoji: 🚦
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # TrafficSense
 
 **Event-driven congestion intelligence for Bengaluru.** TrafficSense forecasts
