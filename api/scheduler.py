@@ -7,7 +7,7 @@ each corridor's live state and drives the incident-tracker state machine:
 It also flags corridors crossing the alert threshold.
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -87,11 +87,10 @@ def poll_corridors():
 def start():
     fb.rebuild_open_incidents()
     if not scheduler.running:
-        # next_run_time=now fires the first poll immediately (in the scheduler's
-        # background thread, so it doesn't block startup), warming _LATEST_STATE
-        # right after boot. Without this the cache stays empty until the first
-        # 15-min tick, so the first dashboard request has to compute all 21
-        # corridors synchronously -- the cold-start wall users hit on Render.
-        scheduler.add_job(poll_corridors, "interval", minutes=15,
-                          id="poll_corridors", next_run_time=datetime.now())
+        # First poll is the regular 15-min tick (not next_run_time=now): warming
+        # all 21 corridors at boot would stack model loads + inference on top of
+        # the import-time memory peak on a 512 MB instance. Inference is cheap
+        # now (pinned thread_count), so the first dashboard request warms the
+        # cache fast enough on its own.
+        scheduler.add_job(poll_corridors, "interval", minutes=15, id="poll_corridors")
         scheduler.start()
