@@ -21,7 +21,7 @@ from modules.barricade_planner import (
     get_route_barricade_points,
     get_route_blast_zone,
 )
-from modules.corridor_lookup import nodes_to_corridors
+from modules.corridor_lookup import get_corridor_centroids, nodes_to_corridors
 from modules.diversion_planner import get_event_diversion_routes, get_route_diversion_routes
 from modules.emergency_router import get_emergency_route
 from modules.feature_builder import build_event_features, predict_label
@@ -150,6 +150,14 @@ def event_impact(event: EventInput):
         manpower, event.available_officers, event.available_barricades,
         barricades, event.available_tow_trucks,
     )
+    # Map the tow-truck corridors to coordinates so the dashboard can mark
+    # exactly where to pre-position them, not just name the corridor.
+    centroids = get_corridor_centroids()
+    tow_truck_positions = [
+        {"corridor": c, "lat": float(centroids[c][0]), "lon": float(centroids[c][1])}
+        for c in optimized["tow_truck_corridors"]
+        if c in centroids
+    ]
 
     # --- emergency ambulance route (nearest hospital <-> venue) ---
     emergency = get_emergency_route(anchor_lat, anchor_lon, impact_map)
@@ -174,6 +182,7 @@ def event_impact(event: EventInput):
         "officers_used": optimized["officers_used"],
         "unmet_officers": optimized["unmet"],
         "tow_truck_corridors": optimized["tow_truck_corridors"],
+        "tow_truck_positions": tow_truck_positions,
         "barricade_points": optimized["barricades_used"],
         "diversion_routes": diversions,
         "emergency_route": emergency,

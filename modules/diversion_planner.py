@@ -140,17 +140,6 @@ def get_event_diversion_routes(lat, lon, affected_corridors=None, attendance=400
         d = G.nodes[n]
         return math.atan2(d["y"] - lat, d["x"] - lon)
 
-    origin_node = ranked[0]
-    ob = bearing(origin_node)
-    # Among the busiest gateways, pick the one most opposite the origin.
-    top_gw = ranked[: max(5, len(ranked) // 4)]
-    dest_node = max(
-        top_gw,
-        key=lambda n: abs(((bearing(n) - ob + math.pi) % (2 * math.pi)) - math.pi),
-    )
-    if dest_node == origin_node:
-        return []
-
     # Route within a local subgraph (event neighbourhood) -- the detour is
     # always local, so this keeps Yen's k-shortest fast instead of searching
     # the whole 155k-node city graph.
@@ -161,7 +150,33 @@ def get_event_diversion_routes(lat, lon, affected_corridors=None, attendance=400
         if abs(d["y"] - lat) < margin_deg and abs(d["x"] - lon) < margin_deg
     ]
     Glocal = Gs.subgraph(local).copy()
-    if origin_node not in Glocal or dest_node not in Glocal:
+
+    # Seal the interior once -- independent of which gateway pair we use.
+    Gsealed = Glocal.copy()
+    Gsealed.remove_nodes_from(n for n in inside_set if n in Gsealed)
+
+    # Pick an origin/dest gateway pair that is actually routable around the
+    # sealed zone. The single highest-betweenness gateway is a poor origin
+    # when its rank came from through-traffic that crossed the now-closed
+    # zone: once sealed it can become a stub reaching almost nothing. So walk
+    # the busiest gateways as origins, and for each take the most-opposite
+    # gateway it can still reach as the destination -- first workable pair wins.
+    top_gw = [n for n in ranked[: max(5, len(ranked) // 4)] if n in Gsealed]
+    origin_node = dest_node = None
+    for cand_origin in top_gw:
+        reachable = nx.descendants(Gsealed, cand_origin)
+        if len(reachable) < 10:
+            continue  # stub gateway, skip
+        ob = bearing(cand_origin)
+        opposite = sorted(
+            (n for n in top_gw if n != cand_origin and n in reachable),
+            key=lambda n: abs(((bearing(n) - ob + math.pi) % (2 * math.pi)) - math.pi),
+            reverse=True,
+        )
+        if opposite:
+            origin_node, dest_node = cand_origin, opposite[0]
+            break
+    if origin_node is None or dest_node is None:
         return []
 
     # Baseline = the would-be straight route through the zone.
@@ -169,10 +184,6 @@ def get_event_diversion_routes(lat, lon, affected_corridors=None, attendance=400
         normal_len = _path_length(Glocal, nx.shortest_path(Glocal, origin_node, dest_node, weight="length"))
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         normal_len = 0.0
-
-    # Seal the interior, then find cheap diverse detours around it.
-    Gsealed = Glocal.copy()
-    Gsealed.remove_nodes_from(n for n in inside_set if n in Gsealed)
 
     # Congestion-aware cost: inflate edges on already-busy corridors so the
     # detour avoids them rather than just skirting the cordon.
@@ -222,22 +233,41 @@ def get_route_diversion_routes(start_lat, start_lon, end_lat, end_lon, k=2, buff
     Gs = get_simple_graph()
     cy = (start_lat + end_lat) / 2
     cx = (start_lon + end_lon) / 2
-    margin_deg = (path_length_km * 1000 + 2500) / 111000
-    local = [
-        n for n, d in Gs.nodes(data=True)
-        if abs(d["y"] - cy) < margin_deg and abs(d["x"] - cx) < margin_deg
-    ]
-    Glocal = Gs.subgraph(local).copy()
-    if origin_node not in Glocal or dest_node not in Glocal:
-        return []
+    base_margin_deg = (path_length_km * 1000 + 2500) / 111000
+
+    # The detour around a closed march route doesn't always fit inside the
+    # tight local window (a one-way grid can force a wide loop) -- widen the
+    # search a couple of times before giving up.
+    Gsealed = None
+    for factor in (1, 2, 4):
+        margin_deg = base_margin_deg * factor
+        local = [
+            n for n, d in Gs.nodes(data=True)
+            if abs(d["y"] - cy) < margin_deg and abs(d["x"] - cx) < margin_deg
+        ]
+        Glocal = Gs.subgraph(local).copy()
+        if origin_node not in Glocal or dest_node not in Glocal:
+            continue
+        candidate = Glocal.copy()
+        candidate.remove_nodes_from(n for n in blocked_nodes if n in candidate)
+        if nx.has_path(candidate, origin_node, dest_node):
+            Gsealed = candidate
+            break
+    if Gsealed is None:
+        # Still no directed path even searching the whole city -- the closed
+        # segment is a one-way-aware cut. Fall back to the undirected graph
+        # so we surface the best physical detour available (it may need a
+        # short contraflow stretch) rather than reporting nothing.
+        candidate = Gs.to_undirected()
+        candidate.remove_nodes_from(n for n in blocked_nodes if n in candidate)
+        if origin_node not in candidate or dest_node not in candidate or not nx.has_path(candidate, origin_node, dest_node):
+            return []
+        Gsealed = nx.DiGraph(candidate)
 
     try:
-        normal_len = _path_length(Glocal, nx.shortest_path(Glocal, origin_node, dest_node, weight="length"))
+        normal_len = _path_length(Gs, nx.shortest_path(Gs, origin_node, dest_node, weight="length"))
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         normal_len = 0.0
-
-    Gsealed = Glocal.copy()
-    Gsealed.remove_nodes_from(n for n in blocked_nodes if n in Gsealed)
 
     weight = "length"
     if impact_map:

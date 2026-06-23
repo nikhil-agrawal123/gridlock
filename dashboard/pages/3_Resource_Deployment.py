@@ -44,16 +44,24 @@ st.caption("Assigned vs required officers per corridor, sorted by deploy time.")
 plan_sorted = sorted(plan, key=lambda p: p["deploy_by"])
 ui.optimized_plan_table(plan_sorted)
 if brief.get("tow_truck_corridors"):
-    st.caption("Tow trucks pre-positioned at: " + ", ".join(brief["tow_truck_corridors"]))
+    st.caption("🚛 Tow trucks pre-positioned at: " + ", ".join(brief["tow_truck_corridors"]))
 
-ui.section("Barricade cordon")
-if brief["barricade_points"]:
-    avg_lat = sum(b["lat"] for b in brief["barricade_points"]) / len(brief["barricade_points"])
-    avg_lon = sum(b["lon"] for b in brief["barricade_points"]) / len(brief["barricade_points"])
+ui.section("Barricade cordon & tow-truck staging")
+tow_positions = brief.get("tow_truck_positions", [])
+if brief["barricade_points"] or tow_positions:
+    pts = [(b["lat"], b["lon"]) for b in brief["barricade_points"]]
+    pts += [(t["lat"], t["lon"]) for t in tow_positions]
+    avg_lat = sum(p[0] for p in pts) / len(pts)
+    avg_lon = sum(p[1] for p in pts) / len(pts)
     m = folium.Map(location=[avg_lat, avg_lon], zoom_start=13, tiles="cartodbpositron")
     for bp in brief["barricade_points"]:
         ui.barricade_marker(folium, bp["lat"], bp["lon"], bp["priority"],
                             popup=bp.get("rationale", bp["priority"])).add_to(m)
+    for t in tow_positions:
+        ui.tow_truck_marker(folium, t["lat"], t["lon"],
+                            popup=f"Tow truck · {t['corridor']}").add_to(m)
     st_folium(m, height=420, use_container_width=True, key="resource_barricade_map")
+    if tow_positions:
+        st.caption("🚧 barricade cordon points · 🚛 tow-truck staging corridors")
 else:
-    st.caption("No barricade points for this event.")
+    st.caption("No barricade points or tow trucks for this event.")

@@ -324,6 +324,22 @@ def barricade_marker(folium, lat, lon, priority="HIGH", popup=None):
     )
 
 
+def tow_truck_marker(folium, lat, lon, popup=None):
+    """A 🚛 tow-truck pre-positioning marker -- navy ring to read as a staged
+    resource, distinct from the red barricade rings."""
+    html = (
+        f'<div style="font-size:18px;line-height:18px;width:26px;height:26px;'
+        f'display:flex;align-items:center;justify-content:center;'
+        f'background:#fff;border:2px solid {NAVY};border-radius:50%;'
+        f'box-shadow:0 1px 4px rgba(0,0,0,.3)">\U0001F69B</div>'
+    )
+    return folium.Marker(
+        [lat, lon],
+        popup=popup,
+        icon=folium.DivIcon(html=html, icon_size=(26, 26), icon_anchor=(13, 13)),
+    )
+
+
 def corridor_rail(states, limit=None, show_speed=True):
     """Signature: transit-line status board. states: list of corridor dicts
     with corridor, impact_level, composite_score, optional tomtom speeds."""

@@ -143,7 +143,9 @@ with acol1:
 with acol2:
     avail_barricades = st.slider("Barricades", 0, 12, 12)
 with acol3:
-    avail_tow = st.slider("Tow trucks", 0, 6, 0)
+    # Default to 3 so the brief shows tow-truck pre-positioning out of the box
+    # (at 0 the optimizer has nothing to place and the panel looks empty).
+    avail_tow = st.slider("Tow trucks", 0, 6, 3)
 
 st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
 if st.button("Generate deployment brief", type="primary"):
@@ -508,7 +510,7 @@ if "last_brief" in st.session_state:
         st.warning(f"Officer budget covers {coverage}% of the need — {brief.get('unmet_officers', 0)} short. High-impact corridors are prioritized.")
     ui.optimized_plan_table(brief.get("optimized_plan", brief["manpower_plan"]))
     if brief.get("tow_truck_corridors"):
-        st.caption("Tow trucks pre-positioned at: " + ", ".join(brief["tow_truck_corridors"]))
+        st.caption("🚛 Tow trucks pre-positioned at: " + ", ".join(brief["tow_truck_corridors"]))
 
     ui.section("Barricade cordon")
     is_route = brief.get("is_route_event")
@@ -524,8 +526,11 @@ if "last_brief" in st.session_state:
     for bp in brief["barricade_points"]:
         ui.barricade_marker(folium, bp["lat"], bp["lon"], bp["priority"],
                             popup=bp.get("rationale", bp["priority"])).add_to(bm)
+    for t in brief.get("tow_truck_positions", []):
+        ui.tow_truck_marker(folium, t["lat"], t["lon"],
+                            popup=f"Tow truck · {t['corridor']}").add_to(bm)
     st_folium(bm, height=420, use_container_width=True, key="barricade_map")
-    st.caption("Placement = busy boundary roads ∩ predicted high-impact corridors ∩ historical incident hotspots.")
+    st.caption("🚧 cordon = busy boundary roads ∩ predicted high-impact corridors ∩ historical hotspots · 🚛 tow-truck staging.")
 
     ui.section("Diversion routes")
     st.caption("Congestion-aware alternates that steer around the closure and already-busy corridors.")
