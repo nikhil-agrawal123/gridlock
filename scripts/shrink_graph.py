@@ -1,26 +1,28 @@
-"""Offline: shrink the full Bengaluru drive graph into a memory-light arterial
-graph the API can hold inside Render's 512 MB.
+"""Offline: strip dead weight from the full Bengaluru drive graph.
 
-The full graph is 155k nodes / 394k edges (~144 MB graphml) and, loaded into an
-osmnx MultiDiGraph -- twice, once as get_graph() and once as the get_simple_graph()
-copy -- it OOMs the free tier. But the runtime routing / barricade / BPR code only
-ever reads node {x, y} and edge {length, highway, lanes}; the heavy `geometry`
-(shapely polylines), names, osmid etc. are dead weight. So we:
+The full graph is 155k nodes / 394k edges (~150 MB graphml). The runtime
+routing / barricade / BPR code only ever reads node {x, y} and edge {length,
+highway, lanes}; the heavy `geometry` (shapely polylines), names, osmid etc.
+are dead weight, so stripping them alone shrinks the file ~150MB -> ~80MB.
 
-  1. keep only major road classes (motorway..tertiary + unclassified + _link ramps)
-     -- residential/service streets are the bulk of the node count and aren't
-     needed for corridor-level diversion routing;
-  2. take the largest weakly-connected component so routing stays connected;
-  3. strip every node/edge attribute except the few the app actually uses;
-  4. recompute betweenness on the pruned graph (it's keyed by node id, and the
-     ranking should reflect the surviving network).
+An earlier version of this script also dropped residential/service roads
+(major-class-only filter) to fit Render's 512 MB free tier. That broke real
+diversion routing: residential streets are 327k of the 394k edges and are
+often the *only* local detour around a closed arterial segment, so route-event
+diversions silently returned zero routes once they were gone. Now that the
+backend runs on Hugging Face Spaces (~16 GB RAM), there's no reason to drop
+them -- keep the full road network, only strip attributes:
+
+  1. take the largest weakly-connected component so routing stays connected;
+  2. strip every node/edge attribute except the few the app actually uses;
+  3. recompute betweenness on the (still full) graph.
 
 Run locally where RAM is plentiful (needs the full graphml + osmnx):
 
     python scripts/shrink_graph.py                 # writes *.min.* for verification
     python scripts/shrink_graph.py --in-place       # overwrite the canonical files
 
-The original 144 MB graphml is recoverable from Git LFS history (git checkout).
+The pre-strip graphml is recoverable from Git LFS history (git checkout).
 """
 import argparse
 import os
@@ -35,19 +37,9 @@ import osmnx as ox
 SRC_GRAPH = "data/bengaluru_graph.graphml"
 SRC_BC = "data/betweenness.pkl"
 
-KEEP_CLASSES = {
-    "motorway", "motorway_link", "trunk", "trunk_link",
-    "primary", "primary_link", "secondary", "secondary_link",
-    "tertiary", "tertiary_link", "unclassified",
-}
 KEEP_NODE_ATTRS = ("x", "y")
 KEEP_EDGE_ATTRS = ("length", "highway", "lanes")
 BC_K = 500  # same sampling as the Day-1 build
-
-
-def _hw(data):
-    hw = data.get("highway", "")
-    return hw[0] if isinstance(hw, (list, tuple)) and hw else hw
 
 
 def _simple_digraph(H):
@@ -78,13 +70,8 @@ def main():
     G = ox.load_graphml(SRC_GRAPH)
     print(f"  full:        {G.number_of_nodes():>7,} nodes  {G.number_of_edges():>7,} edges")
 
-    keep_edges = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
-                  if _hw(d) in KEEP_CLASSES]
-    H = G.edge_subgraph(keep_edges).copy()
-    print(f"  major-class: {H.number_of_nodes():>7,} nodes  {H.number_of_edges():>7,} edges")
-
-    wcc = max(nx.weakly_connected_components(H), key=len)
-    H = H.subgraph(wcc).copy()
+    wcc = max(nx.weakly_connected_components(G), key=len)
+    H = G.subgraph(wcc).copy()
     print(f"  largest WCC: {H.number_of_nodes():>7,} nodes  {H.number_of_edges():>7,} edges")
 
     for _, d in H.nodes(data=True):

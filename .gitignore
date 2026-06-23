@@ -14,3 +14,4 @@ models/current/
 models/versions/
 models/registry.json
 .pytest_cache/
+.tmp_work/
