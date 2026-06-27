@@ -15,6 +15,11 @@ from modules.feature_builder import build_live_features, predict_label
 from modules.fusion import compute_score, score_breakdown
 from modules.tomtom_client import get_speeds
 from modules.weather import get_weather_factor
+from datetime import datetime
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("trafficsense.corridor")
 
 router = APIRouter()
 
@@ -29,6 +34,7 @@ _RISK_W = {"Low": 0.0, "Medium": 0.5, "High": 1.0}
 
 def get_model_risk(corridor: str) -> float:
     """High/Medium/Low impact_level probability collapsed to a single risk in [0,1]."""
+    logger.info("Model risk requested for %s at %s", corridor, datetime.now().isoformat())
     clf = mr.get_impact_clf()
     feats = build_live_features(corridor)
     proba = clf.predict_proba(feats, thread_count=mr.PREDICT_THREADS)[0]
@@ -45,6 +51,7 @@ def compute_corridor_state(corridor: str) -> dict:
     duration = int(reg_dur.predict(feats, thread_count=mr.PREDICT_THREADS)[0])
 
     lat, lon = get_corridor_centroids().get(corridor, (12.97, 77.59))
+    logger.info("Computing corridor state for %s at %s (lat=%f, lon=%f)", corridor, now.isoformat(), lat, lon)
     # Pass the corridor's coordinates so the live TomTom Flow Segment Data
     # endpoint can be queried for the nearest road segment (falls back to
     # mock internally if no API key / the call fails).
@@ -91,6 +98,7 @@ def _assemble_projection(state: dict, horizon_min: int, future: datetime,
     window is re-checked at the horizon and weather is held (no future
     forecast). Pure assembly, no model inference -- so the caller can predict
     once for many corridors and feed the results in."""
+    logger.info("Projecting corridor %s state %d min into the future at %s", state["corridor"], horizon_min, datetime.now().isoformat())
     corridor = state["corridor"]
     persistence = math.exp(-horizon_min / NOWCAST_TAU_MIN)
     obs_dev = state.get("tomtom_deviation") or 0.0
@@ -149,11 +157,13 @@ def project_state(state: dict, horizon_min: int) -> dict:
 
 @router.get("/corridor-risk/{corridor}")
 def corridor_risk(corridor: str):
+    logger.info("Corridor risk requested for %s at %s", corridor, datetime.now().isoformat())
     return compute_corridor_state(corridor)
 
 
 @router.get("/corridors/names")
 def corridors_names():
+    logger.info("Corridor names requested at %s", datetime.now().isoformat())
     """Just the named corridors -- a lightweight list for dropdowns, with no
     TomTom/model computation (unlike /corridors/all)."""
     return {"corridors": get_all_corridors()}
@@ -161,6 +171,7 @@ def corridors_names():
 
 @router.get("/corridors/all")
 def corridors_all():
+    logger.info("All corridor states requested at %s", datetime.now().isoformat())
     for corridor in get_all_corridors():
         if corridor not in _LATEST_STATE:
             compute_corridor_state(corridor)
@@ -177,6 +188,7 @@ def corridors_projected(horizon_min: int = 30):
     instead of three model calls per corridor. On a CPU-throttled instance that
     is the difference between a sub-second response and minutes -- previously
     this was the slowest endpoint and the one that hung the dashboard."""
+    logger.info("Projected corridor states requested at %s", datetime.now().isoformat())
     horizon_min = max(0, min(180, horizon_min))
     corridors = get_all_corridors()
     for corridor in corridors:

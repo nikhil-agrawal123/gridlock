@@ -8,11 +8,16 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from datetime import datetime
 
 from api import scheduler
 from api.routes import admin, corridor, event, incident, insights
 from modules import model_registry as mr
 from fastapi.middleware.cors import CORSMiddleware
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("trafficsense.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -44,12 +49,11 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
+    logger.info("Health check requested at %s", datetime.now().isoformat())
     return {"status": "ok"}
 
 
 if __name__ == "__main__":
-    # Render (and most PaaS) inject the port to bind via $PORT; default to 8000
-    # for local runs. Bind 0.0.0.0 so the platform's proxy can reach the service.
     import uvicorn
 
     port = int(os.environ.get("PORT", "8000"))

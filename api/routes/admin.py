@@ -7,6 +7,11 @@ from fastapi import APIRouter
 
 from modules import feedback_logger as fb
 from modules import model_registry as mr
+from datetime import datetime
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("trafficsense.admin")
 
 router = APIRouter()
 
@@ -14,12 +19,14 @@ router = APIRouter()
 @router.post("/retrain")
 def retrain():
     from retrain import run_retrain
+    logger.info("Retraining requested at %s", datetime.now().isoformat()) 
 
     return run_retrain()
 
 
 @router.get("/model-info")
 def model_info():
+    logger.info("Model info requested at %s", datetime.now().isoformat())
     reg = mr.read_registry()
     return {
         "current": reg.get("current"),
@@ -33,6 +40,7 @@ def model_info():
 @router.post("/rollback/{version_id}")
 def rollback(version_id: str):
     ok = mr.rollback_to(version_id)
+    logger.info("Rollback requested to version %s at %s, success: %s", version_id, datetime.now().isoformat(), ok)
     return {"status": "rolled_back" if ok else "error",
             "current": mr.current_version()} if ok else {"status": "error",
             "detail": f"unknown version {version_id}"}

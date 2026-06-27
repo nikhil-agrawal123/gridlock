@@ -87,10 +87,5 @@ def poll_corridors():
 def start():
     fb.rebuild_open_incidents()
     if not scheduler.running:
-        # First poll is the regular 15-min tick (not next_run_time=now): warming
-        # all 21 corridors at boot would stack model loads + inference on top of
-        # the import-time memory peak on a 512 MB instance. Inference is cheap
-        # now (pinned thread_count), so the first dashboard request warms the
-        # cache fast enough on its own.
         scheduler.add_job(poll_corridors, "interval", minutes=15, id="poll_corridors")
         scheduler.start()

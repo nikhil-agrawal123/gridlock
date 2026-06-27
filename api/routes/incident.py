@@ -10,13 +10,19 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from modules import incident_tracker as tracker
+from datetime import datetime
+import logging
 
 router = APIRouter()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("trafficsense.incident")
 
 
 @router.get("/incidents/active")
 def active_incidents():
     """Return all corridors with an open incident."""
+    logger.info("Active incidents requested at %s", datetime.now().isoformat())
     return tracker.get_active_incidents()
 
 
@@ -27,6 +33,7 @@ def resolve_incident(incident_id: str, actual_corridor_count: int = 1):
     Logs the outcome (Snapshot B) with resolution_method='officer_manual_close'
     and resets the corridor to NORMAL.
     """
+    logger.info("Manual incident resolution requested for %s at %s", incident_id, datetime.now().isoformat())
     result = tracker.manual_resolve(incident_id, actual_corridor_count)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
@@ -56,6 +63,7 @@ def report_incident(report: IncidentReport):
     current model *would* have predicted (for comparison), and writes a linked
     prediction+outcome pair the next retrain learns from.
     """
+    logger.info("Manual incident report submitted for %s at %s", report.corridor, datetime.now().isoformat())
     from modules import feedback_logger as fb
     from modules.corridor_lookup import get_all_corridors
     from modules.feature_builder import build_live_features
@@ -107,6 +115,7 @@ def report_incident(report: IncidentReport):
     except Exception:
         predicted = None
 
+    logger.info("Logging manual incident report for %s at %s", report.corridor, datetime.now().isoformat())
     incident_id = fb.log_manual_report(
         corridor=report.corridor,
         features=feats,

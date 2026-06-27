@@ -10,6 +10,8 @@ from datetime import datetime
 
 import pandas as pd
 from fastapi import APIRouter
+from datetime import datetime
+import logging
 
 from modules import explainer, kpi
 from modules import model_registry as mr
@@ -19,6 +21,9 @@ from modules.feature_builder import build_live_features
 router = APIRouter()
 
 _RISK_W = {"Low": 0.0, "Medium": 0.5, "High": 1.0}
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("trafficsense.insights")
 
 
 @router.get("/explain/corridor/{corridor}")
@@ -31,6 +36,8 @@ def explain_corridor(corridor: str):
     cached state already populated by /corridors/all and the 15-min scheduler.
     """
     from api.routes.corridor import _LATEST_STATE
+
+    logger.info("Explaining corridor %s at %s", corridor, datetime.now().isoformat())
 
     feats = build_live_features(corridor)
     explanation = explainer.explain_impact(feats)
@@ -46,6 +53,8 @@ def explain_corridor(corridor: str):
 
 @router.get("/kpis/system")
 def kpis_system():
+    """Cumulative time/fuel/money/CO2 saved to date by the model's predictions."""
+    logger.info("System KPIs requested at %s", datetime.now().isoformat())
     return kpi.system_kpis()
 
 
@@ -55,6 +64,7 @@ def timeline_corridors(hours: int = 24):
     so it's fast and deterministic). For each hour we re-derive the corridor's
     feature row with that hour set, then batch-predict impact level, duration
     and a 0-100 model-risk score in one shot."""
+    logger.info("Timeline for corridors requested at %s", datetime.now().isoformat())
     hours = max(1, min(48, hours))
     corridors = get_all_corridors()
     centroids = get_corridor_centroids()
@@ -92,4 +102,5 @@ def timeline_corridors(hours: int = 24):
             "corridor": c, "lat": float(lat), "lon": float(lon),
             "series": series[c], "peak_hour": peak["hour"], "peak_score": peak["score"],
         })
+    logger.info("Timeline for corridors generated at %s", datetime.now().isoformat())
     return {"hours": hours, "generated_at": today.isoformat(), "corridors": out}

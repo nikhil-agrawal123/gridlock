@@ -12,6 +12,8 @@ from typing import Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+import logging
+from datetime import datetime
 
 from api.state import ACTIVE_EVENTS, EVENT_BRIEFS, compute_multiplier
 from modules import model_registry as mr
@@ -37,6 +39,9 @@ router = APIRouter()
 
 _RISK_W = {"Low": 0.0, "Medium": 0.5, "High": 1.0}
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("trafficsense.event")
+
 
 class EventInput(BaseModel):
     name: str
@@ -55,6 +60,9 @@ class EventInput(BaseModel):
 
 
 def _event_id(event: "EventInput") -> str:
+    """Deterministic short hash of the event name + start time, so the
+    dashboard can re-query the same event without storing a DB record."""
+    logger.info("Generating event ID for %s at %s", event.name, datetime.now().isoformat())
     raw = f"{event.name}|{event.start_time}"
     return hashlib.sha1(raw.encode()).hexdigest()[:10]
 
@@ -63,6 +71,7 @@ def _corridor_risk(corridor, event_type, dt, event_mult, weather_factor):
     """Per-corridor forecast with weather folded into the score. A future
     event has no live TomTom reading, so the live-speed term is 0; the score
     is driven by the breakdown-risk model, event size and weather."""
+    logger.info("Computing projected corridor risk for %s at %s", corridor, datetime.now().isoformat())
     clf, reg_dur = mr.get_impact_clf(), mr.get_duration_reg()
     feats = build_event_features(corridor, event_type, dt)
     impact = predict_label(clf, feats)
@@ -83,6 +92,7 @@ def _corridor_risk(corridor, event_type, dt, event_mult, weather_factor):
 
 @router.post("/event-impact")
 def event_impact(event: EventInput):
+    logger.info("Event impact requested for %s at %s", event.name, datetime.now().isoformat())
     start_time = datetime.fromisoformat(event.start_time)
     is_route = event.end_lat is not None and event.end_lon is not None
 
@@ -97,6 +107,7 @@ def event_impact(event: EventInput):
 
     # --- affected zone -> corridors (point vs moving event) ---
     if is_route:
+        logger.info("Computing route blast zone for %s at %s", event.name, datetime.now().isoformat())
         zone_nodes, path, route_len = get_route_blast_zone(
             event.lat, event.lon, event.end_lat, event.end_lon
         )
@@ -125,6 +136,7 @@ def event_impact(event: EventInput):
     # (impact forecast) + historical hotspots, so they land on the boundary
     # roads that are both busy and predicted/known to be high-risk. ---
     if is_route:
+        logger.info("Computing route barricades for %s at %s", event.name, datetime.now().isoformat())
         barricades, _, _ = get_route_barricade_points(
             event.lat, event.lon, event.end_lat, event.end_lon
         )
@@ -136,6 +148,7 @@ def event_impact(event: EventInput):
 
     # --- diversions (congestion-aware) ---
     if is_route:
+        logger.info("Computing route diversions for %s at %s", event.name, datetime.now().isoformat())
         diversions = get_route_diversion_routes(
             event.lat, event.lon, event.end_lat, event.end_lon, impact_map=impact_map
         )
@@ -146,6 +159,7 @@ def event_impact(event: EventInput):
 
     # --- resource optimization ---
     manpower = get_manpower_plan(corridors, impact_map, event.event_type, start_time)
+    logger.info("Computing optimized resource allocation for %s at %s", event.name, datetime.now().isoformat())
     optimized = optimize_allocation(
         manpower, event.available_officers, event.available_barricades,
         barricades, event.available_tow_trucks,
@@ -153,6 +167,7 @@ def event_impact(event: EventInput):
     # Map the tow-truck corridors to coordinates so the dashboard can mark
     # exactly where to pre-position them, not just name the corridor.
     centroids = get_corridor_centroids()
+    logger.info("Computing tow truck positions for %s at %s", event.name, datetime.now().isoformat())
     tow_truck_positions = [
         {"corridor": c, "lat": float(centroids[c][0]), "lon": float(centroids[c][1])}
         for c in optimized["tow_truck_corridors"]
@@ -228,6 +243,9 @@ def simulate_incident(event_id: str, incident: IncidentInput):
     re-routes the diversions and the emergency green corridor around the now
     -blocked road, and prices the added delay the blockage imposes.
     """
+
+    logger.info("Simulating incident for event %s at %s", event_id, datetime.now().isoformat())
+
     brief = EVENT_BRIEFS.get(event_id)
     if not brief:
         return {"status": "error", "detail": f"unknown event_id {event_id}"}
@@ -361,6 +379,9 @@ def activate_phase2(event_id: str):
     incidents on each corridor so the feedback loop starts tracking from
     event start (rather than waiting for speed deviation).
     """
+
+    logger.info("Activating Phase 2 for event %s at %s", event_id, datetime.now().isoformat())
+
     brief = EVENT_BRIEFS.get(event_id)
     if not brief:
         return {"status": "error", "detail": f"unknown event_id {event_id}"}

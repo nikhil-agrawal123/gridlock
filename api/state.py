@@ -8,6 +8,10 @@ geometries, so they're not tiny), and expired ACTIVE_EVENTS are purged on read.
 """
 from collections import OrderedDict
 from datetime import datetime
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("trafficsense.state")
 
 MAX_BRIEFS = 25  # plenty for the demo; oldest evicted beyond this
 
@@ -36,6 +40,7 @@ def _purge_expired_events(now):
 
 def compute_multiplier(attendance):
     """Bigger crowds push the congestion multiplier up, capped at 2.5x."""
+    logger.info("Computing congestion multiplier for attendance %d", attendance)
     return 1.0 + min(1.5, attendance / 40000 * 0.5)
 
 
@@ -44,6 +49,7 @@ def get_event_context(corridor, at=None):
     future ``at`` lets the forecast projection check whether an active event is
     still inside its window at the horizon being projected."""
     at = at or datetime.now()
+    logger.info("Getting event context for corridor %s at %s", corridor, at.isoformat())
     _purge_expired_events(datetime.now())
     for ev in ACTIVE_EVENTS.values():
         if corridor in ev["corridors"] and at < ev["end_time"]:
